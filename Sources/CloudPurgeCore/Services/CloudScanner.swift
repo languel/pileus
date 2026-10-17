@@ -60,6 +60,7 @@ public final class CloudScanner: Sendable {
     public struct ScanResult: Sendable {
         public let items: [CloudItem]
         public let folderNodes: [CloudFolderNode]
+        public let allFolders: [CloudFolderNode]
         public let totalCloudBytes: Int64
         public let reclaimableBytes: Int64
         public let downloadedCount: Int
@@ -74,6 +75,7 @@ public final class CloudScanner: Sendable {
         public let downloadedCount: Int
         public let newItemsBatch: [CloudItem]
         public let snapshotFolderNodes: [CloudFolderNode]?
+        public let snapshotAllFolders: [CloudFolderNode]?
     }
 
     private struct FolderFrame {
@@ -102,9 +104,14 @@ public final class CloudScanner: Sendable {
 
     /// Builds a snapshot of the current folder hierarchy from the active stack (including in-progress folders)
     /// so pausing or stopping mid-scan preserves all folder analysis data discovered so far.
-    private static func buildSnapshotFolders(from stack: [FolderFrame], providerId: String) -> [CloudFolderNode] {
-        guard !stack.isEmpty else { return [] }
+    private static func buildSnapshotFolders(
+        from stack: [FolderFrame],
+        completedAllFolders: [CloudFolderNode],
+        providerId: String
+    ) -> (tree: [CloudFolderNode], allFolders: [CloudFolderNode]) {
+        guard !stack.isEmpty else { return ([], completedAllFolders) }
         var tempStack = stack
+        var allList = completedAllFolders
         while tempStack.count > 1 {
             guard var finished = tempStack.popLast() else { break }
             let parentIdx = tempStack.count - 1
@@ -129,11 +136,15 @@ public final class CloudScanner: Sendable {
                     children: finished.children
                 )
                 tempStack[parentIdx].children.append(node)
+
+                var flatNode = node
+                flatNode.children = []
+                allList.append(flatNode)
             }
         }
         var topLevel = tempStack.first?.children ?? []
         topLevel.sort { $0.reclaimableBytes > $1.reclaimableBytes }
-        return topLevel
+        return (topLevel, allList)
     }
 
     /// High-performance POSIX fts directory scanner with O(1) stack-based folder tree aggregation,
@@ -152,6 +163,7 @@ public final class CloudScanner: Sendable {
                 return ScanResult(
                     items: [],
                     folderNodes: [],
+                    allFolders: [],
                     totalCloudBytes: 0,
                     reclaimableBytes: 0,
                     downloadedCount: 0,
@@ -165,6 +177,7 @@ public final class CloudScanner: Sendable {
                 return ScanResult(
                     items: [],
                     folderNodes: [],
+                    allFolders: [],
                     totalCloudBytes: 0,
                     reclaimableBytes: 0,
                     downloadedCount: 0,
@@ -176,6 +189,9 @@ public final class CloudScanner: Sendable {
             var items: [CloudItem] = []
             items.reserveCapacity(16384)
             var lastReportedItemIndex = 0
+
+            var allFolders: [CloudFolderNode] = []
+            allFolders.reserveCapacity(1024)
 
             var stack: [FolderFrame] = []
             stack.reserveCapacity(64)
@@ -230,10 +246,23 @@ public final class CloudScanner: Sendable {
                     }
 
                     let parentSuppresses = stack.last?.suppressChildFolderNodes ?? false
-                    let isHeavyPackageDir = (name == "node_modules" || name == ".git" || name.hasSuffix(".app") || name.hasSuffix(".framework") || name.hasSuffix(".xcodeproj") || name.hasSuffix(".photoslibrary"))
-                    // Suppress creating thousands of deep child FolderNodes inside node_modules/.git or beyond depth 6,
-                    // while still counting 100% of their files and bytes in the parent FolderNode!
-                    let suppressChildren = parentSuppresses || isHeavyPackageDir || level >= 6
+                    let isHeavyPackageDir = (
+                        name == "node_modules" ||
+                        name == ".git" ||
+                        name == ".venv" ||
+                        name == "venv" ||
+                        name == "__pycache__" ||
+                        name == "Pods" ||
+                        name == ".next" ||
+                        name == ".nuxt" ||
+                        name.hasSuffix(".app") ||
+                        name.hasSuffix(".framework") ||
+                        name.hasSuffix(".xcodeproj") ||
+                        name.hasSuffix(".photoslibrary")
+                    )
+                    // Suppress creating thousands of deep child FolderNodes inside node_modules/.git/.venv or beyond depth 10,
+                    // while still counting 100% of their files and bytes in the folder node itself!
+                    let suppressChildren = parentSuppresses || isHeavyPackageDir || level >= 10
 
                     stack.append(
                         FolderFrame(
@@ -270,6 +299,10 @@ public final class CloudScanner: Sendable {
                                 children: finished.children
                             )
                             stack[parentIdx].children.append(node)
+
+                            var flatNode = node
+                            flatNode.children = []
+                            allFolders.append(flatNode)
                         }
                     } else {
                         // Root frame popped: put it back so we can read its children at the end
@@ -359,8 +392,8 @@ public final class CloudScanner: Sendable {
                             }
 
                             // When pausing or stopping, also snapshot the folder tree so Folder Analyzer works immediately
-                            let folderSnapshot: [CloudFolderNode]? = (isPausedNow || isStoppedNow)
-                                ? CloudScanner.buildSnapshotFolders(from: stack, providerId: providerId)
+                            let folderSnapshot: (tree: [CloudFolderNode], allFolders: [CloudFolderNode])? = (isPausedNow || isStoppedNow)
+                                ? CloudScanner.buildSnapshotFolders(from: stack, completedAllFolders: allFolders, providerId: providerId)
                                 : nil
 
                             onProgress?(
@@ -371,7 +404,8 @@ public final class CloudScanner: Sendable {
                                     reclaimableBytes: reclaimableBytes,
                                     downloadedCount: downloadedCount,
                                     newItemsBatch: batch,
-                                    snapshotFolderNodes: folderSnapshot
+                                    snapshotFolderNodes: folderSnapshot?.tree,
+                                    snapshotAllFolders: folderSnapshot?.allFolders
                                 )
                             )
                         }
@@ -387,7 +421,11 @@ public final class CloudScanner: Sendable {
                 }
             }
 
-            let finalFolders = CloudScanner.buildSnapshotFolders(from: stack, providerId: providerId)
+            let finalSnapshot = CloudScanner.buildSnapshotFolders(
+                from: stack,
+                completedAllFolders: allFolders,
+                providerId: providerId
+            )
             let finalBatch: [CloudItem]
             if items.count > lastReportedItemIndex {
                 finalBatch = Array(items[lastReportedItemIndex..<items.count])
@@ -405,14 +443,16 @@ public final class CloudScanner: Sendable {
                         reclaimableBytes: reclaimableBytes,
                         downloadedCount: downloadedCount,
                         newItemsBatch: finalBatch,
-                        snapshotFolderNodes: finalFolders
+                        snapshotFolderNodes: finalSnapshot.tree,
+                        snapshotAllFolders: finalSnapshot.allFolders
                     )
                 )
             }
 
             return ScanResult(
                 items: items,
-                folderNodes: finalFolders,
+                folderNodes: finalSnapshot.tree,
+                allFolders: finalSnapshot.allFolders,
                 totalCloudBytes: totalCloudBytes,
                 reclaimableBytes: reclaimableBytes,
                 downloadedCount: downloadedCount,

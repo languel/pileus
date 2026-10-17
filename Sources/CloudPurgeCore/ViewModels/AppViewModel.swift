@@ -23,6 +23,7 @@ public struct ProviderScanState: Sendable {
     public var scanProgressText: String = "Ready to scan"
     public var items: [CloudItem] = []
     public var folderNodes: [CloudFolderNode] = []
+    public var allFolders: [CloudFolderNode] = []
     public var totalCloudBytes: Int64 = 0
     public var reclaimableBytes: Int64 = 0
     public var downloadedCount: Int = 0
@@ -111,6 +112,10 @@ public final class AppViewModel: ObservableObject {
 
     public var folderNodes: [CloudFolderNode] {
         activeState.folderNodes
+    }
+
+    public var allFolders: [CloudFolderNode] {
+        activeState.allFolders
     }
 
     public var isScanning: Bool {
@@ -354,6 +359,9 @@ public final class AppViewModel: ObservableObject {
                         if let folderSnap = progress.snapshotFolderNodes {
                             st.folderNodes = folderSnap
                         }
+                        if let allFolderSnap = progress.snapshotAllFolders {
+                            st.allFolders = allFolderSnap
+                        }
 
                         if st.isPaused {
                             st.scanProgressText = "Scan paused • \(progress.scannedFiles.formatted()) files (\(ByteFormatter.string(fromByteCount: progress.reclaimableBytes)) reclaimable)"
@@ -390,6 +398,7 @@ public final class AppViewModel: ObservableObject {
                 completedState.scannedCount = result.totalFilesCount
                 completedState.items = result.items
                 completedState.folderNodes = result.folderNodes
+                completedState.allFolders = result.allFolders
                 completedState.totalCloudBytes = result.totalCloudBytes
                 completedState.reclaimableBytes = result.reclaimableBytes
                 completedState.downloadedCount = result.downloadedCount
@@ -630,6 +639,42 @@ public final class AppViewModel: ObservableObject {
         showConfirmationSheet = true
     }
 
+    /// Recursively evicts all downloaded files across a list of folders (e.g., all matching `node_modules` folders).
+    public func promptEvictMultipleFolders(nodes: [CloudFolderNode], label: String) {
+        let reclaimableFolders = nodes.filter { $0.reclaimableBytes > 0 }
+        guard !reclaimableFolders.isEmpty else {
+            errorMessage = "No downloaded files to reclaim in the matching folders."
+            showErrorAlert = true
+            return
+        }
+
+        let exactPaths = Set(reclaimableFolders.map { $0.path })
+        let prefixes = reclaimableFolders.map { $0.path.hasSuffix("/") ? $0.path : ($0.path + "/") }
+
+        var matchedItems: [CloudItem] = []
+        var seenIds = Set<UUID>()
+
+        for item in allItems where item.isReclaimable {
+            if exactPaths.contains(item.parentFolderPath) || prefixes.contains(where: { item.path.hasPrefix($0) }) {
+                if seenIds.insert(item.id).inserted {
+                    matchedItems.append(item)
+                }
+            }
+        }
+
+        guard !matchedItems.isEmpty else {
+            errorMessage = "No downloaded files to reclaim in the matching folders."
+            showErrorAlert = true
+            return
+        }
+
+        let totalFreed = matchedItems.reduce(0) { $0 + $1.allocatedSize }
+        pendingEvictionItems = matchedItems
+        pendingEvictionTitle = "Remove Downloads in \(reclaimableFolders.count) Folders (\(label))"
+        pendingEvictionDescription = "Recursively evict \(matchedItems.count.formatted()) downloaded files across \(reclaimableFolders.count) matching folders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space."
+        showConfirmationSheet = true
+    }
+
     public func executeConfirmedEviction() {
         showConfirmationSheet = false
         let itemsToEvict = pendingEvictionItems
@@ -698,7 +743,7 @@ public final class AppViewModel: ObservableObject {
             st.scanProgressText = "Scan complete • \(st.items.count.formatted()) files (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
         }
 
-        // Recursively update folderNodes
+        // Recursively update folderNodes and flat allFolders
         func updateNode(_ node: inout CloudFolderNode) {
             let folderPath = node.path
             let folderPrefix = folderPath.hasSuffix("/") ? folderPath : (folderPath + "/")
@@ -726,6 +771,10 @@ public final class AppViewModel: ObservableObject {
             updateNode(&st.folderNodes[idx])
         }
         st.folderNodes.sort { $0.reclaimableBytes > $1.reclaimableBytes }
+
+        for idx in 0..<st.allFolders.count {
+            updateNode(&st.allFolders[idx])
+        }
 
         providerStates[providerId] = st
         updateProviderSummary(

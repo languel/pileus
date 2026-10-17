@@ -21,8 +21,13 @@ struct FilterBarView: View {
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
-                    TextField("Search files by name or folder...", text: $viewModel.filterOptions.searchText)
-                        .textFieldStyle(.plain)
+                    TextField(
+                        viewModel.activeTab == .folders
+                            ? "Search folders (e.g. node_modules, .venv, build)..."
+                            : "Search files by name or folder...",
+                        text: $viewModel.filterOptions.searchText
+                    )
+                    .textFieldStyle(.plain)
                     if !viewModel.filterOptions.searchText.isEmpty {
                         Button(action: { viewModel.filterOptions.searchText = "" }) {
                             Image(systemName: "xmark.circle.fill")
@@ -41,7 +46,7 @@ struct FilterBarView: View {
                                 .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
                         )
                 )
-                .frame(maxWidth: 320)
+                .frame(maxWidth: 340)
             }
 
             // Filters row

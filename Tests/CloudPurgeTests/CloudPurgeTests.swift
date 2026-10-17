@@ -282,4 +282,26 @@ final class CloudPurgeTests: XCTestCase {
         XCTAssertFalse(vm.providers.contains(where: { $0.id == added.id }))
         XCTAssertNil(vm.providerStates[added.id])
     }
+
+    func testNestedNodeModulesFolderSearch() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("NodeModulesTest_\(UUID().uuidString)")
+        let projectDir = tempDir.appendingPathComponent("Projects/MyApp")
+        let nodeModulesDir = projectDir.appendingPathComponent("node_modules")
+        let subPackageDir = nodeModulesDir.appendingPathComponent("react/cjs")
+        try FileManager.default.createDirectory(at: subPackageDir, withIntermediateDirectories: true)
+
+        let pkgFile = subPackageDir.appendingPathComponent("react.production.min.js")
+        try "function react(){}".write(to: pkgFile, atomically: true, encoding: .utf8)
+
+        let result = try await CloudScanner.shared.scan(rootURL: tempDir, providerId: "nm-test")
+        let matchingNodeModules = result.allFolders.filter { $0.name == "node_modules" }
+        XCTAssertEqual(matchingNodeModules.count, 1)
+        XCTAssertEqual(matchingNodeModules.first?.relativePath, "Projects/MyApp/node_modules")
+        XCTAssertEqual(matchingNodeModules.first?.totalFilesCount, 1)
+
+        // Subpackages inside node_modules should not clutter allFolders
+        XCTAssertFalse(result.allFolders.contains(where: { $0.name == "cjs" }))
+
+        try FileManager.default.removeItem(at: tempDir)
+    }
 }
