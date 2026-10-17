@@ -77,20 +77,20 @@ struct MetricsHeaderView: View {
                 if !viewModel.selectedItemIds.isEmpty {
                     Button(action: { viewModel.promptEvictSelection() }) {
                         HStack(spacing: 6) {
-                            Image(systemName: "xmark.bin.fill")
-                            Text("Remove (\(viewModel.selectedItemIds.count))")
+                            Image(systemName: "icloud.slash.fill")
+                            Text("Evict (\(viewModel.selectedItemIds.count))")
                                 .fontWeight(.medium)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .tint(.orange)
                 } else {
                     Button(action: { viewModel.promptEvictAllFiltered() }) {
                         HStack(spacing: 6) {
-                            Image(systemName: "sparkles")
-                            Text("Remove All Downloads")
+                            Image(systemName: "arrow.up.to.line.compact")
+                            Text("Evict All Local")
                                 .fontWeight(.medium)
                         }
                         .frame(maxWidth: .infinity)

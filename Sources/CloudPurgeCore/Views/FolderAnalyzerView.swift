@@ -82,7 +82,7 @@ struct FolderAnalyzerView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Folder Space Breakdown")
                             .font(.headline)
-                        Text("Search for heavy folders like node_modules or .venv at any depth, or browse the folder tree to recursively remove downloads.")
+                        Text("Search for heavy folders like node_modules or .venv at any depth, or browse the folder tree to recursively evict local copies.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -95,14 +95,14 @@ struct FolderAnalyzerView: View {
                             viewModel.promptEvictMultipleFolders(nodes: matchingReclaimableFolders, label: label)
                         }) {
                             HStack(spacing: 5) {
-                                Image(systemName: "xmark.bin.fill")
-                                Text("Remove Downloads in All \(matchingReclaimableFolders.count) (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)))")
+                                Image(systemName: "arrow.up.to.line.compact")
+                                Text("Evict All \(matchingReclaimableFolders.count) Folders (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)))")
                             }
                             .font(.caption)
                             .fontWeight(.medium)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                        .tint(.orange)
                         .disabled(viewModel.isEvicting)
                     }
 
@@ -333,18 +333,18 @@ struct FolderRowView: View {
 
                 // Actions
                 HStack(spacing: 8) {
-                    // Recursive remove downloads button
+                    // Recursive evict local copies button
                     Button(action: { viewModel.promptEvictFolder(node: node) }) {
                         HStack(spacing: 4) {
-                            Image(systemName: "xmark.bin")
-                            Text("Remove Downloads")
+                            Image(systemName: "arrow.up.to.line.compact")
+                            Text("Evict Local")
                         }
                         .font(.caption)
                     }
                     .buttonStyle(.bordered)
-                    .tint(.red)
+                    .tint(.orange)
                     .disabled(node.reclaimableBytes == 0 || viewModel.isEvicting)
-                    .help("Recursively evict all downloaded files in this folder")
+                    .help("Recursively evict all downloaded files in this folder (remains in cloud)")
 
                     // Filter files to this folder
                     Button(action: {

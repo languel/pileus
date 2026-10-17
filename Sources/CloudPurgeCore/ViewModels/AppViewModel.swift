@@ -70,6 +70,7 @@ public final class AppViewModel: ObservableObject {
     }
 
     @Published public var isEvicting: Bool = false
+    @Published public var isEvictionPaused: Bool = false
     @Published public var evictionProgressCurrent: Int = 0
     @Published public var evictionProgressTotal: Int = 0
     @Published public var evictionProgressText: String = ""
@@ -80,6 +81,7 @@ public final class AppViewModel: ObservableObject {
     // Confirmation Sheet State
     @Published public var showConfirmationSheet: Bool = false
     @Published public var pendingEvictionItems: [CloudItem] = []
+    @Published public var pendingEvictionFolderURLs: [URL] = []
     @Published public var pendingEvictionTitle: String = ""
     @Published public var pendingEvictionDescription: String = ""
 
@@ -94,6 +96,7 @@ public final class AppViewModel: ObservableObject {
     private var lastLiveRefreshTime: [String: CFAbsoluteTime] = [:]
     private var filterSortTask: Task<Void, Never>?
     private var currentEvictTask: Task<Void, Never>?
+    private var currentEvictControl: ScanSessionControl?
 
     public init() {
         loadProviders()
@@ -578,14 +581,15 @@ public final class AppViewModel: ObservableObject {
 
     public func evictSingle(item: CloudItem) {
         guard item.isReclaimable else {
-            errorMessage = "File is not eligible for eviction or is already dateless."
+            errorMessage = "File is not eligible for eviction or is already cloud-only."
             showErrorAlert = true
             return
         }
 
         pendingEvictionItems = [item]
-        pendingEvictionTitle = "Remove Download: \(item.name)"
-        pendingEvictionDescription = "This will make '\(item.name)' cloud-only, freeing \(ByteFormatter.string(fromByteCount: item.allocatedSize)) on your Mac. The file remains safely stored in the cloud and can be reopened anytime."
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = "Evict Local Copy: \(item.name)"
+        pendingEvictionDescription = "This will unload '\(item.name)' from local storage and make it cloud-only, freeing \(ByteFormatter.string(fromByteCount: item.allocatedSize)) on your Mac. The file remains safely stored in the cloud and can be reopened anytime."
         showConfirmationSheet = true
     }
 
@@ -599,8 +603,9 @@ public final class AppViewModel: ObservableObject {
 
         let totalFreed = items.reduce(0) { $0 + $1.allocatedSize }
         pendingEvictionItems = items
-        pendingEvictionTitle = "Remove Downloads (\(items.count) Files)"
-        pendingEvictionDescription = "You are about to reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) across \(items.count) selected files. These files will be converted to cloud placeholders and can be re-downloaded at any time."
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = "Evict Local Copies (\(items.count) Files)"
+        pendingEvictionDescription = "You are about to unload \(items.count) selected files and reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) on your Mac. These files will be converted to cloud placeholders and remain 100% preserved in the cloud."
         showConfirmationSheet = true
     }
 
@@ -614,8 +619,9 @@ public final class AppViewModel: ObservableObject {
 
         let totalFreed = items.reduce(0) { $0 + $1.allocatedSize }
         pendingEvictionItems = items
-        pendingEvictionTitle = "Remove All Filtered Downloads"
-        pendingEvictionDescription = "Reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) across all \(items.count) files matching your active filters. Files remain preserved in the cloud."
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = "Evict All Matching Local Copies"
+        pendingEvictionDescription = "Unload local copies and reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) across all \(items.count) files matching your active filters. Files remain safely preserved in the cloud."
         showConfirmationSheet = true
     }
 
@@ -627,15 +633,16 @@ public final class AppViewModel: ObservableObject {
         }
 
         guard !itemsInFolder.isEmpty else {
-            errorMessage = "Folder '\(node.name)' contains no downloaded files to reclaim."
+            errorMessage = "Folder '\(node.name)' contains no downloaded files to evict."
             showErrorAlert = true
             return
         }
 
         let totalFreed = itemsInFolder.reduce(0) { $0 + $1.allocatedSize }
         pendingEvictionItems = itemsInFolder
-        pendingEvictionTitle = "Remove Downloads in '\(node.name)'"
-        pendingEvictionDescription = "Recursively evict \(itemsInFolder.count) downloaded files in '\(node.name)' and its subfolders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space."
+        pendingEvictionFolderURLs = [node.url]
+        pendingEvictionTitle = "Evict Local Copies in '\(node.name)'"
+        pendingEvictionDescription = "Recursively unload \(itemsInFolder.count.formatted()) downloaded files in '\(node.name)' and its subfolders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space while keeping them in the cloud."
         showConfirmationSheet = true
     }
 
@@ -643,7 +650,7 @@ public final class AppViewModel: ObservableObject {
     public func promptEvictMultipleFolders(nodes: [CloudFolderNode], label: String) {
         let reclaimableFolders = nodes.filter { $0.reclaimableBytes > 0 }
         guard !reclaimableFolders.isEmpty else {
-            errorMessage = "No downloaded files to reclaim in the matching folders."
+            errorMessage = "No downloaded files to evict in the matching folders."
             showErrorAlert = true
             return
         }
@@ -663,41 +670,74 @@ public final class AppViewModel: ObservableObject {
         }
 
         guard !matchedItems.isEmpty else {
-            errorMessage = "No downloaded files to reclaim in the matching folders."
+            errorMessage = "No downloaded files to evict in the matching folders."
             showErrorAlert = true
             return
         }
 
         let totalFreed = matchedItems.reduce(0) { $0 + $1.allocatedSize }
         pendingEvictionItems = matchedItems
-        pendingEvictionTitle = "Remove Downloads in \(reclaimableFolders.count) Folders (\(label))"
-        pendingEvictionDescription = "Recursively evict \(matchedItems.count.formatted()) downloaded files across \(reclaimableFolders.count) matching folders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space."
+        pendingEvictionFolderURLs = reclaimableFolders.map { $0.url }
+        pendingEvictionTitle = "Evict Local Copies in \(reclaimableFolders.count) Folders (\(label))"
+        pendingEvictionDescription = "Recursively unload \(matchedItems.count.formatted()) downloaded files across \(reclaimableFolders.count) matching folders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space while keeping all files in the cloud."
         showConfirmationSheet = true
+    }
+
+    public func togglePauseEviction() {
+        guard isEvicting, let ctrl = currentEvictControl else { return }
+        if isEvictionPaused {
+            isEvictionPaused = false
+            ctrl.resume()
+        } else {
+            isEvictionPaused = true
+            ctrl.pause()
+        }
+    }
+
+    public func stopEviction() {
+        guard isEvicting else { return }
+        currentEvictControl?.stop()
+        isEvictionPaused = false
+        evictionProgressText = "Stopping safely after current file..."
     }
 
     public func executeConfirmedEviction() {
         showConfirmationSheet = false
         let itemsToEvict = pendingEvictionItems
+        let folderURLsToEvict = pendingEvictionFolderURLs
         guard !itemsToEvict.isEmpty else { return }
         let targetProviderId = itemsToEvict.first?.providerId ?? selectedProvider?.id
 
+        let control = ScanSessionControl()
+        currentEvictControl = control
         isEvicting = true
+        isEvictionPaused = false
         evictionProgressCurrent = 0
         evictionProgressTotal = itemsToEvict.count
-        evictionProgressText = "Preparing eviction..."
+        evictionProgressText = "Evicting local copies..."
 
         currentEvictTask = Task { [weak self] in
             guard let self = self else { return }
-            let report = await EvictionService.shared.evictBatch(items: itemsToEvict) { [weak self] cur, total, freed in
+            let report = await EvictionService.shared.evictBatch(
+                items: itemsToEvict,
+                rootFolderURLs: folderURLsToEvict,
+                control: control
+            ) { [weak self] cur, total, freed in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
                     self.evictionProgressCurrent = cur
                     self.evictionProgressTotal = total
-                    self.evictionProgressText = "Evicted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)..."
+                    if self.isEvictionPaused {
+                        self.evictionProgressText = "Paused at \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed so far)"
+                    } else {
+                        self.evictionProgressText = "Evicted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)..."
+                    }
                 }
             }
 
             self.isEvicting = false
+            self.isEvictionPaused = false
+            self.currentEvictControl = nil
             self.lastReport = report
             self.showReportAlert = true
             self.selectedItemIds.subtract(report.evictedItemIds)

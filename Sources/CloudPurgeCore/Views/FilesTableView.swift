@@ -155,14 +155,14 @@ struct FilesTableView: View {
                             if item.isReclaimable {
                                 Button(action: { viewModel.evictSingle(item: item) }) {
                                     HStack(spacing: 4) {
-                                        Image(systemName: "xmark.bin")
-                                        Text("Remove")
+                                        Image(systemName: "arrow.up.to.line.compact")
+                                        Text("Evict")
                                     }
                                     .font(.caption)
                                 }
                                 .buttonStyle(.bordered)
-                                .tint(.red)
-                                .help("Remove local download to free disk space")
+                                .tint(.orange)
+                                .help("Evict local copy to free disk space (remains in cloud)")
                             } else if item.syncStatus == .cloudOnly {
                                 Button(action: { viewModel.downloadItem(item: item) }) {
                                     HStack(spacing: 4) {
@@ -190,7 +190,7 @@ struct FilesTableView: View {
                     let reclaimable = selectedItems.filter { $0.isReclaimable }
 
                     if !reclaimable.isEmpty {
-                        Button("Remove Downloads (\(reclaimable.count) files)") {
+                        Button("Evict Local Copies (\(reclaimable.count) files)") {
                             viewModel.promptEvictSelection()
                         }
                     }

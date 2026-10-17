@@ -36,20 +36,45 @@ public struct MainView: View {
                     Color.black.opacity(0.3)
                         .ignoresSafeArea()
 
-                    VStack(spacing: 16) {
+                    VStack(spacing: 14) {
                         ProgressView(
                             value: Double(viewModel.evictionProgressCurrent),
                             total: Double(max(1, viewModel.evictionProgressTotal))
                         ) {
-                            Text("Evicting Downloads...")
+                            Text(viewModel.isEvictionPaused ? "Eviction Paused" : "Evicting Local Copies...")
                                 .font(.headline)
                         }
                         .progressViewStyle(.linear)
-                        .frame(width: 320)
+                        .frame(width: 340)
 
                         Text(viewModel.evictionProgressText)
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                        Text("Safe to pause or stop anytime — each file is evicted atomically and remains 100% preserved in the cloud.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 340)
+
+                        HStack(spacing: 12) {
+                            Button(action: { viewModel.togglePauseEviction() }) {
+                                Label(
+                                    viewModel.isEvictionPaused ? "Resume" : "Pause",
+                                    systemImage: viewModel.isEvictionPaused ? "play.fill" : "pause.fill"
+                                )
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(viewModel.isEvictionPaused ? .green : .orange)
+                            .controlSize(.small)
+
+                            Button(action: { viewModel.stopEviction() }) {
+                                Label("Stop Safely (Keep Freed Space)", systemImage: "stop.fill")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(.top, 2)
                     }
                     .padding(28)
                     .background(
@@ -67,7 +92,11 @@ public struct MainView: View {
             Button("Done", role: .cancel) {}
         } message: {
             if let report = viewModel.lastReport {
-                Text("Successfully evicted \(report.successfullyEvicted) files.\nReclaimed \(ByteFormatter.string(fromByteCount: report.bytesReclaimed)) of disk space on your Mac.\nFiles remain safely preserved in cloud storage.")
+                if report.wasCancelled {
+                    Text("Stopped safely after evicting \(report.successfullyEvicted.formatted()) of \(report.totalRequested.formatted()) files.\nReclaimed \(ByteFormatter.string(fromByteCount: report.bytesReclaimed)) of local disk space.\nAll files remain safely preserved in cloud storage.")
+                } else {
+                    Text("Successfully evicted \(report.successfullyEvicted.formatted()) local copies.\nReclaimed \(ByteFormatter.string(fromByteCount: report.bytesReclaimed)) of disk space on your Mac.\nFiles remain safely preserved in cloud storage.")
+                }
             } else {
                 Text("Eviction finished.")
             }

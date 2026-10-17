@@ -16,8 +16,13 @@ public enum DatalessDetector {
 
     /// Queries the low-level BSD file stat attributes for datalessness and physical disk allocation.
     public static func statInfo(for url: URL) -> FileStatInfo {
+        return statInfo(forPath: url.path)
+    }
+
+    /// Queries the low-level BSD file stat attributes for a file path string directly without URL allocation.
+    public static func statInfo(forPath path: String) -> FileStatInfo {
         var fileStat = Darwin.stat()
-        let result: Int32 = url.path.withCString { cPath in
+        let result: Int32 = path.withCString { cPath in
             stat(cPath, &fileStat)
         }
 

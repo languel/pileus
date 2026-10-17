@@ -7,6 +7,7 @@ public struct EvictionReport: Sendable {
     public let bytesReclaimed: Int64
     public let failedItems: [(url: URL, reason: String)]
     public let evictedItemIds: Set<UUID>
+    public let wasCancelled: Bool
 }
 
 public enum EvictionError: LocalizedError, Sendable {
@@ -40,11 +41,10 @@ public final class EvictionService: Sendable {
     }
 
     /// Safely evicts a single file from local disk while preserving its cloud stub.
-    public func evict(item: CloudItem) throws -> Int64 {
+    /// When `fastBatchMode` is true, skips redundant pre-flight URLResourceValues XPC round-trips
+    /// because `FileManager.evictUbiquitousItem(at:)` natively enforces cloud sync safety in the kernel/FileProvider daemon.
+    public func evict(item: CloudItem, fastBatchMode: Bool = false) throws -> Int64 {
         let itemURL = item.url
-        guard fileManager.fileExists(atPath: item.path) else {
-            throw EvictionError.itemNotFound
-        }
 
         guard item.isUploaded else {
             throw EvictionError.notSafeToEvict("Local edits have not uploaded to the cloud yet.")
@@ -58,16 +58,21 @@ public final class EvictionService: Sendable {
             throw EvictionError.notSafeToEvict("File has an unresolved cloud conflict.")
         }
 
-        // Perform live pre-eviction check on ubiquitous status
-        if let vals = try? itemURL.resourceValues(forKeys: Self.safetyKeys) {
-            if vals.ubiquitousItemIsUploaded == false {
-                throw EvictionError.notSafeToEvict("Local edits have not uploaded to the cloud yet.")
+        if !fastBatchMode {
+            guard fileManager.fileExists(atPath: item.path) else {
+                throw EvictionError.itemNotFound
             }
-            if vals.ubiquitousItemIsUploading == true {
-                throw EvictionError.notSafeToEvict("File is actively uploading to the cloud.")
-            }
-            if vals.ubiquitousItemHasUnresolvedConflicts == true {
-                throw EvictionError.notSafeToEvict("File has an unresolved cloud conflict.")
+
+            if let vals = try? itemURL.resourceValues(forKeys: Self.safetyKeys) {
+                if vals.ubiquitousItemIsUploaded == false {
+                    throw EvictionError.notSafeToEvict("Local edits have not uploaded to the cloud yet.")
+                }
+                if vals.ubiquitousItemIsUploading == true {
+                    throw EvictionError.notSafeToEvict("File is actively uploading to the cloud.")
+                }
+                if vals.ubiquitousItemHasUnresolvedConflicts == true {
+                    throw EvictionError.notSafeToEvict("File has an unresolved cloud conflict.")
+                }
             }
         }
 
@@ -82,55 +87,231 @@ public final class EvictionService: Sendable {
         return reclaimedBytes
     }
 
-    /// Evicts multiple items in the background, reporting throttled progress.
+    /// Evicts multiple items concurrently in the background, supporting safe cancellation/pause at any point.
+    /// If `rootFolderURLs` are provided (e.g. `node_modules` directories), attempts directory-level eviction first.
     public func evictBatch(
         items: [CloudItem],
+        rootFolderURLs: [URL] = [],
+        control: ScanSessionControl? = nil,
         onProgress: (@Sendable (Int, Int, Int64) -> Void)? = nil
     ) async -> EvictionReport {
         return await Task.detached(priority: .userInitiated) {
-            var successCount = 0
-            var skippedCount = 0
-            var bytesReclaimed: Int64 = 0
-            var failedItems: [(url: URL, reason: String)] = []
-            var evictedIds = Set<UUID>()
-            evictedIds.reserveCapacity(items.count)
-
             let total = items.count
-            var lastProgressTime = CFAbsoluteTimeGetCurrent()
+            guard total > 0 else {
+                return EvictionReport(
+                    totalRequested: 0,
+                    successfullyEvicted: 0,
+                    skippedCount: 0,
+                    bytesReclaimed: 0,
+                    failedItems: [],
+                    evictedItemIds: [],
+                    wasCancelled: false
+                )
+            }
 
-            for (index, item) in items.enumerated() {
-                if Task.isCancelled {
-                    break
-                }
+            // Fast Path: If whole folders (such as node_modules) were requested, ask macOS to evict the folder URLs directly first.
+            // On modern macOS / iCloud Drive / FileProvider, evictUbiquitousItem on a directory can evict the subtree in one XPC call.
+            var remainingItems: [CloudItem] = []
+            var preEvictedSuccessCount = 0
+            var preEvictedBytes: Int64 = 0
+            var preEvictedIds = Set<UUID>()
+            preEvictedIds.reserveCapacity(total)
 
-                if !item.isReclaimable {
-                    skippedCount += 1
-                } else {
-                    do {
-                        let freed = try self.evict(item: item)
-                        successCount += 1
-                        bytesReclaimed += freed
-                        evictedIds.insert(item.id)
-                    } catch {
-                        failedItems.append((url: item.url, reason: error.localizedDescription))
+            if !rootFolderURLs.isEmpty {
+                var folderEvictedPrefixes: [String] = []
+                for folderURL in rootFolderURLs {
+                    if (control?.isStopped ?? false) || Task.isCancelled { break }
+                    if (try? FileManager.default.evictUbiquitousItem(at: folderURL)) != nil {
+                        let p = folderURL.path
+                        folderEvictedPrefixes.append(p.hasSuffix("/") ? p : (p + "/"))
                     }
                 }
 
-                let now = CFAbsoluteTimeGetCurrent()
-                if index + 1 == total || now - lastProgressTime >= 0.10 {
-                    lastProgressTime = now
-                    onProgress?(index + 1, total, bytesReclaimed)
+                if !folderEvictedPrefixes.isEmpty {
+                    // Verify a sample file inside each prefix to see if directory-level eviction immediately demoted children
+                    for item in items {
+                        if folderEvictedPrefixes.contains(where: { item.path.hasPrefix($0) }) {
+                            let st = DatalessDetector.statInfo(forPath: item.path)
+                            if st.isDataless || st.allocatedBytes == 0 {
+                                preEvictedSuccessCount += 1
+                                preEvictedBytes += item.allocatedSize
+                                preEvictedIds.insert(item.id)
+                                continue
+                            }
+                        }
+                        remainingItems.append(item)
+                    }
+                    if preEvictedSuccessCount > 0 {
+                        onProgress?(preEvictedSuccessCount, total, preEvictedBytes)
+                    }
+                } else {
+                    remainingItems = items
+                }
+            } else {
+                remainingItems = items
+            }
+
+            if remainingItems.isEmpty {
+                return EvictionReport(
+                    totalRequested: total,
+                    successfullyEvicted: preEvictedSuccessCount,
+                    skippedCount: 0,
+                    bytesReclaimed: preEvictedBytes,
+                    failedItems: [],
+                    evictedItemIds: preEvictedIds,
+                    wasCancelled: false
+                )
+            }
+
+            // Concurrent Worker Pool (8 workers) for remaining files so tens of thousands of node_modules files
+            // don't bottleneck on sequential XPC latency.
+            let workerCount = min(8, max(1, remainingItems.count))
+            let chunkSize = (remainingItems.count + workerCount - 1) / workerCount
+
+            actor ProgressTracker {
+                var processed: Int
+                var successCount: Int
+                var skippedCount: Int = 0
+                var bytesReclaimed: Int64
+                var failedItems: [(url: URL, reason: String)] = []
+                var evictedIds: Set<UUID>
+                var lastReportTime: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
+
+                init(initialSuccess: Int, initialBytes: Int64, initialIds: Set<UUID>, capacity: Int) {
+                    self.processed = initialSuccess
+                    self.successCount = initialSuccess
+                    self.bytesReclaimed = initialBytes
+                    self.evictedIds = initialIds
+                    self.evictedIds.reserveCapacity(capacity)
+                }
+
+                func recordBatch(
+                    processedDelta: Int,
+                    successDelta: Int,
+                    skippedDelta: Int,
+                    bytesDelta: Int64,
+                    ids: [UUID],
+                    failures: [(url: URL, reason: String)],
+                    total: Int,
+                    forceReport: Bool,
+                    onProgress: (@Sendable (Int, Int, Int64) -> Void)?
+                ) {
+                    processed += processedDelta
+                    successCount += successDelta
+                    skippedCount += skippedDelta
+                    bytesReclaimed += bytesDelta
+                    for id in ids {
+                        evictedIds.insert(id)
+                    }
+                    if !failures.isEmpty {
+                        failedItems.append(contentsOf: failures)
+                    }
+
+                    let now = CFAbsoluteTimeGetCurrent()
+                    if forceReport || processed >= total || (now - lastReportTime >= 0.12) {
+                        lastReportTime = now
+                        onProgress?(processed, total, bytesReclaimed)
+                    }
+                }
+
+                func snapshot(total: Int, wasCancelled: Bool) -> EvictionReport {
+                    return EvictionReport(
+                        totalRequested: total,
+                        successfullyEvicted: successCount,
+                        skippedCount: skippedCount,
+                        bytesReclaimed: bytesReclaimed,
+                        failedItems: failedItems,
+                        evictedItemIds: evictedIds,
+                        wasCancelled: wasCancelled
+                    )
                 }
             }
 
-            return EvictionReport(
-                totalRequested: total,
-                successfullyEvicted: successCount,
-                skippedCount: skippedCount,
-                bytesReclaimed: bytesReclaimed,
-                failedItems: failedItems,
-                evictedItemIds: evictedIds
+            let tracker = ProgressTracker(
+                initialSuccess: preEvictedSuccessCount,
+                initialBytes: preEvictedBytes,
+                initialIds: preEvictedIds,
+                capacity: total
             )
+
+            await withTaskGroup(of: Void.self) { group in
+                for workerIdx in 0..<workerCount {
+                    let start = workerIdx * chunkSize
+                    guard start < remainingItems.count else { break }
+                    let end = min(remainingItems.count, start + chunkSize)
+                    let slice = Array(remainingItems[start..<end])
+
+                    group.addTask {
+                        var localProcessed = 0
+                        var localSuccess = 0
+                        var localSkipped = 0
+                        var localBytes: Int64 = 0
+                        var localIds: [UUID] = []
+                        localIds.reserveCapacity(32)
+                        var localFailures: [(url: URL, reason: String)] = []
+
+                        for item in slice {
+                            if (control?.isStopped ?? false) || Task.isCancelled {
+                                break
+                            }
+                            if let ctrl = control, !ctrl.waitIfPaused() {
+                                break
+                            }
+
+                            localProcessed += 1
+                            if !item.isReclaimable {
+                                localSkipped += 1
+                            } else {
+                                do {
+                                    let freed = try EvictionService.shared.evict(item: item, fastBatchMode: true)
+                                    localSuccess += 1
+                                    localBytes += freed
+                                    localIds.append(item.id)
+                                } catch {
+                                    localFailures.append((url: item.url, reason: error.localizedDescription))
+                                }
+                            }
+
+                            if localProcessed >= 16 {
+                                await tracker.recordBatch(
+                                    processedDelta: localProcessed,
+                                    successDelta: localSuccess,
+                                    skippedDelta: localSkipped,
+                                    bytesDelta: localBytes,
+                                    ids: localIds,
+                                    failures: localFailures,
+                                    total: total,
+                                    forceReport: false,
+                                    onProgress: onProgress
+                                )
+                                localProcessed = 0
+                                localSuccess = 0
+                                localSkipped = 0
+                                localBytes = 0
+                                localIds.removeAll(keepingCapacity: true)
+                                localFailures.removeAll(keepingCapacity: true)
+                            }
+                        }
+
+                        if localProcessed > 0 {
+                            await tracker.recordBatch(
+                                processedDelta: localProcessed,
+                                successDelta: localSuccess,
+                                skippedDelta: localSkipped,
+                                bytesDelta: localBytes,
+                                ids: localIds,
+                                failures: localFailures,
+                                total: total,
+                                forceReport: true,
+                                onProgress: onProgress
+                            )
+                        }
+                    }
+                }
+            }
+
+            let cancelled = (control?.isStopped ?? false) || Task.isCancelled
+            return await tracker.snapshot(total: total, wasCancelled: cancelled)
         }.value
     }
 

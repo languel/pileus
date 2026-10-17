@@ -121,12 +121,12 @@ struct EvictionConfirmSheet: View {
                 Button(action: {
                     viewModel.executeConfirmedEviction()
                 }) {
-                    Text("Remove Downloads")
+                    Text("Evict Local Copies")
                         .fontWeight(.semibold)
-                        .frame(minWidth: 140)
+                        .frame(minWidth: 150)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .tint(.orange)
                 .keyboardShortcut(.defaultAction)
             }
         }
