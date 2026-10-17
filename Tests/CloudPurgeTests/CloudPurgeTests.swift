@@ -304,4 +304,87 @@ final class CloudPurgeTests: XCTestCase {
 
         try FileManager.default.removeItem(at: tempDir)
     }
+
+    func testDuplicateFinderAndSymlinkAndAliasResolution() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("DuplicateTest_\(UUID().uuidString)")
+        let dirA = tempDir.appendingPathComponent("FolderA")
+        let dirB = tempDir.appendingPathComponent("FolderB")
+        let dirC = tempDir.appendingPathComponent("FolderC")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirC, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let payload = String(repeating: "IdenticalPayloadBlock-0123456789ABCDEF\n", count: 128)
+        let uniquePayload = String(repeating: "DifferentPayloadBlock-9999999999999999\n", count: 128)
+
+        let fileA = dirA.appendingPathComponent("dataset.csv")
+        let fileB = dirB.appendingPathComponent("dataset_copy1.csv")
+        let fileC = dirC.appendingPathComponent("dataset_copy2.csv")
+        let fileUnique = dirA.appendingPathComponent("unique.csv")
+
+        try payload.write(to: fileA, atomically: true, encoding: .utf8)
+        try payload.write(to: fileB, atomically: true, encoding: .utf8)
+        try payload.write(to: fileC, atomically: true, encoding: .utf8)
+        try uniquePayload.write(to: fileUnique, atomically: true, encoding: .utf8)
+
+        let scanResult = try await CloudScanner.shared.scan(rootURL: tempDir, providerId: "dup-test")
+        XCTAssertEqual(scanResult.items.count, 4)
+
+        let groups = await DuplicateService.shared.findDuplicates(
+            items: scanResult.items,
+            minimumFileSize: 64
+        )
+        XCTAssertEqual(groups.count, 1)
+
+        var group = groups[0]
+        XCTAssertEqual(group.items.count, 3)
+        XCTAssertTrue(group.isVerifiedFullHash)
+
+        // Choose fileA as Primary explicitly
+        guard let itemA = group.items.first(where: { $0.path == fileA.path }),
+              let itemB = group.items.first(where: { $0.path == fileB.path }),
+              let itemC = group.items.first(where: { $0.path == fileC.path }) else {
+            XCTFail("Missing expected duplicate items")
+            return
+        }
+        group.primaryItemId = itemA.id
+
+        // Resolve itemB using POSIX Symbolic Link
+        let symlinkGroup = DuplicateGroup(
+            id: group.id,
+            contentHash: group.contentHash,
+            fileSize: group.fileSize,
+            items: [itemA, itemB],
+            primaryItemId: itemA.id
+        )
+        let symReport = await DuplicateService.shared.resolveDuplicates(
+            groups: [symlinkGroup],
+            strategy: .symlink,
+            useRelativeSymlinksWhenSameSource: true
+        )
+        XCTAssertEqual(symReport.duplicatesReplaced, 1)
+        let symDest = try FileManager.default.destinationOfSymbolicLink(atPath: fileB.path)
+        XCTAssertEqual(symDest, "../FolderA/dataset.csv")
+        let readViaSymlink = try String(contentsOf: fileB, encoding: .utf8)
+        XCTAssertEqual(readViaSymlink, payload)
+
+        // Resolve itemC using macOS Finder Alias / Bookmark
+        let aliasGroup = DuplicateGroup(
+            id: group.id,
+            contentHash: group.contentHash,
+            fileSize: group.fileSize,
+            items: [itemA, itemC],
+            primaryItemId: itemA.id
+        )
+        let aliasReport = await DuplicateService.shared.resolveDuplicates(
+            groups: [aliasGroup],
+            strategy: .macOSAlias
+        )
+        XCTAssertEqual(aliasReport.duplicatesReplaced, 1)
+        let bookmarkData = try URL.bookmarkData(withContentsOf: fileC)
+        var isStale = false
+        let resolvedURL = try URL(resolvingBookmarkData: bookmarkData, bookmarkDataIsStale: &isStale)
+        XCTAssertEqual(resolvedURL.standardizedFileURL.path, fileA.standardizedFileURL.path)
+    }
 }

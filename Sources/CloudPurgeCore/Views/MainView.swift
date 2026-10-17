@@ -26,6 +26,8 @@ public struct MainView: View {
                             FilesTableView(viewModel: viewModel)
                         case .folders:
                             FolderAnalyzerView(viewModel: viewModel)
+                        case .duplicates:
+                            DuplicateFinderView(viewModel: viewModel)
                         }
                     }
                 }
@@ -41,7 +43,7 @@ public struct MainView: View {
                             value: Double(viewModel.evictionProgressCurrent),
                             total: Double(max(1, viewModel.evictionProgressTotal))
                         ) {
-                            Text(viewModel.isEvictionPaused ? "Eviction Paused" : "Evicting Local Copies...")
+                            Text(viewModel.isEvictionPaused ? "Operation Paused" : "Processing Files...")
                                 .font(.headline)
                         }
                         .progressViewStyle(.linear)
@@ -51,7 +53,7 @@ public struct MainView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
 
-                        Text("Safe to pause or stop anytime — each file is evicted atomically and remains 100% preserved in the cloud.")
+                        Text("Safe to pause or stop anytime — each file is processed atomically.")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -69,7 +71,7 @@ public struct MainView: View {
                             .controlSize(.small)
 
                             Button(action: { viewModel.stopEviction() }) {
-                                Label("Stop Safely (Keep Freed Space)", systemImage: "stop.fill")
+                                Label("Stop Safely (Keep Progress)", systemImage: "stop.fill")
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
@@ -88,6 +90,9 @@ public struct MainView: View {
         .sheet(isPresented: $viewModel.showConfirmationSheet) {
             EvictionConfirmSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.showDuplicateResolveSheet) {
+            DuplicateResolveSheet(viewModel: viewModel)
+        }
         .alert(viewModel.lastReport?.actionMode == .deleteEverywhere ? "Deletion Report" : "Eviction Report", isPresented: $viewModel.showReportAlert) {
             Button("Done", role: .cancel) {}
         } message: {
@@ -101,6 +106,16 @@ public struct MainView: View {
                 }
             } else {
                 Text("Operation finished.")
+            }
+        }
+        .alert("Duplicate Resolution Report", isPresented: $viewModel.showDuplicateReportAlert) {
+            Button("Done", role: .cancel) {}
+        } message: {
+            if let rep = viewModel.lastDuplicateReport {
+                let failNote = rep.failedItems.isEmpty ? "" : "\nSkipped/Failed: \(rep.failedItems.count) (\(rep.failedItems.first?.reason ?? ""))"
+                Text("Resolved \(rep.groupsResolved.formatted()) duplicate groups using \(rep.strategy.shortTitle).\nReplaced \(rep.duplicatesReplaced.formatted()) duplicate copies and reclaimed \(ByteFormatter.string(fromByteCount: rep.localBytesReclaimed)) of local disk space.\(failNote)")
+            } else {
+                Text("Duplicate resolution complete.")
             }
         }
         .alert("Notice", isPresented: $viewModel.showErrorAlert) {

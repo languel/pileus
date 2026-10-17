@@ -27,7 +27,7 @@ struct SidebarView: View {
             }
 
             if !customProviders.isEmpty {
-                Section(header: Text("Custom Folders").font(.subheadline).foregroundColor(.secondary)) {
+                Section(header: Text("Local & Custom Folders").font(.subheadline).foregroundColor(.secondary)) {
                     ForEach(customProviders) { provider in
                         providerRow(provider)
                     }
@@ -36,7 +36,7 @@ struct SidebarView: View {
 
             Section {
                 Button(action: selectCustomFolder) {
-                    Label("Add Custom Folder...", systemImage: "plus.circle")
+                    Label("Add Local or Cloud Folder...", systemImage: "plus.circle")
                         .foregroundColor(.primary)
                 }
                 .buttonStyle(.plain)
@@ -223,8 +223,8 @@ struct SidebarView: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Choose Cloud Folder"
-        panel.message = "Select a folder inside iCloud Drive, Google Drive, or any cloud sync directory."
+        panel.prompt = "Choose Folder"
+        panel.message = "Select any folder on your Mac, an external local drive, or a cloud sync directory."
 
         if panel.runModal() == .OK, let url = panel.url {
             viewModel.addCustomFolder(url: url)

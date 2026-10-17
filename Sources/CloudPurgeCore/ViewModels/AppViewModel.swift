@@ -5,14 +5,23 @@ import AppKit
 public enum AppTab: String, CaseIterable, Identifiable {
     case files = "Files List"
     case folders = "Folder Space Analyzer"
+    case duplicates = "Duplicate Finder"
 
     public var id: String { rawValue }
     public var icon: String {
         switch self {
         case .files: return "list.bullet"
         case .folders: return "folder.badge.gearshape"
+        case .duplicates: return "doc.on.doc.fill"
         }
     }
+}
+
+public enum DuplicateScanScope: String, CaseIterable, Identifiable, Sendable {
+    case currentSource = "Current Source Only"
+    case allScannedSources = "All Scanned Sources (Cross-Drive)"
+
+    public var id: String { rawValue }
 }
 
 public struct ProviderScanState: Sendable {
@@ -78,6 +87,25 @@ public final class AppViewModel: ObservableObject {
     @Published public var selectedItemIds = Set<UUID>()
     @Published public var activeTab: AppTab = .files
 
+    // Duplicate Finder State
+    @Published public var duplicateGroups: [DuplicateGroup] = []
+    @Published public var isScanningDuplicates: Bool = false
+    @Published public var duplicateScanProgressText: String = "Ready to scan for exact duplicate files"
+    @Published public var duplicateScanProcessed: Int = 0
+    @Published public var duplicateScanTotal: Int = 0
+    @Published public var duplicateScanScope: DuplicateScanScope = .currentSource
+    @Published public var duplicateMinSizeBytes: Int64 = 10 * 1024 // Default >= 10 KB
+    @Published public var duplicateIncludeCloudOnly: Bool = false
+    @Published public var selectedDuplicateGroupIds = Set<String>()
+
+    // Duplicate Resolution Sheet State
+    @Published public var showDuplicateResolveSheet: Bool = false
+    @Published public var pendingDuplicateGroups: [DuplicateGroup] = []
+    @Published public var selectedResolutionStrategy: DuplicateResolutionStrategy = .symlink
+    @Published public var useRelativeSymlinks: Bool = true
+    @Published public var lastDuplicateReport: DuplicateResolutionReport?
+    @Published public var showDuplicateReportAlert: Bool = false
+
     // Confirmation Sheet State
     @Published public var showConfirmationSheet: Bool = false
     @Published public var pendingActionMode: PurgeActionMode = .evictLocalOnly
@@ -98,6 +126,8 @@ public final class AppViewModel: ObservableObject {
     private var filterSortTask: Task<Void, Never>?
     private var currentEvictTask: Task<Void, Never>?
     private var currentEvictControl: ScanSessionControl?
+    private var duplicateScanTask: Task<Void, Never>?
+    private var duplicateScanControl: ScanSessionControl?
 
     public init() {
         loadProviders()
@@ -1083,5 +1113,203 @@ public final class AppViewModel: ObservableObject {
 
     public func revealInFinder(url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: - Duplicate Finder & Link Resolution
+
+    public func providerName(for providerId: String) -> String {
+        providers.first(where: { $0.id == providerId })?.name ?? "Drive"
+    }
+
+    public func providerType(for providerId: String) -> ProviderType {
+        providers.first(where: { $0.id == providerId })?.type ?? .custom
+    }
+
+    /// Starts scanning for exact duplicate files across the current source or all scanned sources.
+    public func startDuplicateScan() {
+        duplicateScanControl?.stop()
+        duplicateScanTask?.cancel()
+
+        let sourceItems: [CloudItem]
+        switch duplicateScanScope {
+        case .currentSource:
+            sourceItems = allItems
+        case .allScannedSources:
+            var combined: [CloudItem] = []
+            for p in providers {
+                if let st = providerStates[p.id], !st.items.isEmpty {
+                    combined.append(contentsOf: st.items)
+                }
+            }
+            sourceItems = combined
+        }
+
+        guard !sourceItems.isEmpty else {
+            errorMessage = "Please scan at least one drive or folder first before running Duplicate Finder."
+            showErrorAlert = true
+            return
+        }
+
+        let control = ScanSessionControl()
+        duplicateScanControl = control
+        isScanningDuplicates = true
+        duplicateGroups = []
+        selectedDuplicateGroupIds.removeAll()
+        duplicateScanProcessed = 0
+        duplicateScanTotal = sourceItems.count
+        duplicateScanProgressText = "Grouping \(sourceItems.count.formatted()) files by size..."
+
+        let minSize = duplicateMinSizeBytes
+        let includeCloud = duplicateIncludeCloudOnly
+
+        duplicateScanTask = Task { [weak self] in
+            guard let self = self else { return }
+            let groups = await DuplicateService.shared.findDuplicates(
+                items: sourceItems,
+                minimumFileSize: minSize,
+                includeCloudOnlyByNameAndSize: includeCloud,
+                control: control
+            ) { [weak self] prog in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.duplicateScanProcessed = prog.processedCount
+                    self.duplicateScanTotal = max(1, prog.totalCandidates)
+                    self.duplicateScanProgressText = "\(prog.phase.rawValue) (\(prog.processedCount.formatted()) / \(prog.totalCandidates.formatted()))"
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+            self.isScanningDuplicates = false
+            self.duplicateScanControl = nil
+            self.duplicateGroups = groups
+            let totalRedundant = groups.reduce(0) { $0 + $1.redundantLogicalBytes }
+            let totalLocalReclaim = groups.reduce(0) { $0 + $1.reclaimableLocalBytes }
+            if groups.isEmpty {
+                self.duplicateScanProgressText = "No duplicate files found matching criteria."
+            } else {
+                self.duplicateScanProgressText = "Found \(groups.count.formatted()) duplicate groups • \(ByteFormatter.string(fromByteCount: totalLocalReclaim)) local (\(ByteFormatter.string(fromByteCount: totalRedundant)) total) redundant"
+            }
+        }
+    }
+
+    public func stopDuplicateScan() {
+        duplicateScanControl?.stop()
+        duplicateScanTask?.cancel()
+        isScanningDuplicates = false
+        duplicateScanControl = nil
+        duplicateScanProgressText = "Duplicate scan stopped."
+    }
+
+    /// Sets the chosen Primary copy for a specific DuplicateGroup.
+    public func setPrimaryItem(groupId: String, itemId: UUID) {
+        if let idx = duplicateGroups.firstIndex(where: { $0.id == groupId }) {
+            duplicateGroups[idx].primaryItemId = itemId
+        }
+        if let pIdx = pendingDuplicateGroups.firstIndex(where: { $0.id == groupId }) {
+            pendingDuplicateGroups[pIdx].primaryItemId = itemId
+        }
+    }
+
+    /// Smart default strategy based on whether duplicates reside in Cloud drives vs Local custom folders.
+    private func recommendedStrategy(for groups: [DuplicateGroup]) -> DuplicateResolutionStrategy {
+        let providersMap = Dictionary(uniqueKeysWithValues: providers.map { ($0.id, $0) })
+        for group in groups {
+            for dup in group.duplicateItems {
+                if let p = providersMap[dup.providerId], p.type != .custom {
+                    // For cloud drives (iCloud Drive, Google Drive, OneDrive, Dropbox), Finder Alias is cloud-safe
+                    return .macOSAlias
+                }
+            }
+        }
+        return .symlink
+    }
+
+    public func promptResolveDuplicateGroup(_ group: DuplicateGroup) {
+        pendingDuplicateGroups = [group]
+        selectedResolutionStrategy = recommendedStrategy(for: [group])
+        showDuplicateResolveSheet = true
+    }
+
+    public func promptResolveSelectedDuplicateGroups() {
+        let targets: [DuplicateGroup]
+        if selectedDuplicateGroupIds.isEmpty {
+            targets = duplicateGroups
+        } else {
+            targets = duplicateGroups.filter { selectedDuplicateGroupIds.contains($0.id) }
+        }
+        guard !targets.isEmpty else {
+            errorMessage = "No duplicate groups to resolve."
+            showErrorAlert = true
+            return
+        }
+        pendingDuplicateGroups = targets
+        selectedResolutionStrategy = recommendedStrategy(for: targets)
+        showDuplicateResolveSheet = true
+    }
+
+    public func currentDuplicateWarnings() -> [DuplicatePlatformWarning] {
+        let providersMap = Dictionary(uniqueKeysWithValues: providers.map { ($0.id, $0) })
+        return DuplicateService.shared.evaluateWarnings(
+            strategy: selectedResolutionStrategy,
+            groups: pendingDuplicateGroups,
+            providersById: providersMap
+        )
+    }
+
+    public func executeConfirmedDuplicateResolution() {
+        showDuplicateResolveSheet = false
+        let groupsToResolve = pendingDuplicateGroups
+        let strategy = selectedResolutionStrategy
+        let relativeSymlinks = useRelativeSymlinks
+        guard !groupsToResolve.isEmpty else { return }
+
+        let totalDups = groupsToResolve.reduce(0) { $0 + $1.duplicateItems.count }
+        let control = ScanSessionControl()
+        currentEvictControl = control
+        isEvicting = true
+        isEvictionPaused = false
+        evictionProgressCurrent = 0
+        evictionProgressTotal = max(1, totalDups)
+        evictionProgressText = "Resolving \(totalDups) duplicates via \(strategy.shortTitle)..."
+
+        currentEvictTask = Task { [weak self] in
+            guard let self = self else { return }
+            let report = await DuplicateService.shared.resolveDuplicates(
+                groups: groupsToResolve,
+                strategy: strategy,
+                useRelativeSymlinksWhenSameSource: relativeSymlinks,
+                control: control
+            )
+
+            self.isEvicting = false
+            self.isEvictionPaused = false
+            self.currentEvictControl = nil
+            self.lastDuplicateReport = report
+            self.showDuplicateReportAlert = true
+
+            if !report.resolvedDuplicateIds.isEmpty {
+                // Remove resolved duplicate items from duplicateGroups
+                var updatedGroups: [DuplicateGroup] = []
+                for var group in self.duplicateGroups {
+                    group.items.removeAll { report.resolvedDuplicateIds.contains($0.id) }
+                    if group.items.count > 1 {
+                        updatedGroups.append(group)
+                    } else {
+                        self.selectedDuplicateGroupIds.remove(group.id)
+                    }
+                }
+                self.duplicateGroups = updatedGroups
+
+                // Also update providerStates in memory for all affected providers
+                let affectedProviders = Set(groupsToResolve.flatMap { $0.duplicateItems.map { $0.providerId } })
+                for pid in affectedProviders {
+                    self.applyDeletionInMemory(
+                        providerId: pid,
+                        deletedIds: report.resolvedDuplicateIds,
+                        deletedFolderPaths: []
+                    )
+                }
+            }
+        }
     }
 }
