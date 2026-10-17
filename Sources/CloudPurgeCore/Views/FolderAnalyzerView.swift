@@ -22,6 +22,16 @@ struct FolderAnalyzerView: View {
         case name = "Folder Name"
 
         var id: String { rawValue }
+
+        func label(isLocalOnly: Bool) -> String {
+            guard isLocalOnly else { return rawValue }
+            switch self {
+            case .reclaimableBytes: return "Largest Size on Disk"
+            case .percentage: return "Highest Disk Ratio"
+            case .totalSize: return "Largest Logical Size"
+            case .name: return "Folder Name"
+            }
+        }
     }
 
     private var activeQuery: String {
@@ -49,11 +59,13 @@ struct FolderAnalyzerView: View {
                         return false
                     }
                 }
-                if status == .downloadedOnly && node.reclaimableBytes == 0 {
-                    return false
-                }
-                if status == .cloudOnly && node.reclaimableBytes > 0 {
-                    return false
+                if !viewModel.isActiveProviderLocalOnly {
+                    if status == .downloadedOnly && node.reclaimableBytes == 0 {
+                        return false
+                    }
+                    if status == .cloudOnly && node.reclaimableBytes > 0 {
+                        return false
+                    }
                 }
                 if minBytes > 0 && max(node.reclaimableBytes, node.totalCloudBytes) < minBytes {
                     return false
@@ -75,16 +87,68 @@ struct FolderAnalyzerView: View {
     }
 
     var body: some View {
+        let isLocalOnly = viewModel.isActiveProviderLocalOnly
+
         VStack(spacing: 0) {
             // Header bar for Folder Analyzer + Quick Presets
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Folder Space Breakdown")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 6) {
+                        Text("Folders")
                             .font(.headline)
-                        Text("Search for heavy folders like node_modules or .venv at any depth, or browse the folder tree to recursively evict local copies.")
+                        Image(systemName: "info.circle")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                            .help(isLocalOnly
+                                ? "Search for heavy folders like node_modules or .venv at any depth, or browse the folder tree to inspect disk usage."
+                                : "Search for heavy folders like node_modules or .venv at any depth, or browse the folder tree to recursively evict local copies or delete from cloud.")
+                    }
+
+                    // Quick Folder Search Presets inline
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(Self.quickPresets, id: \.self) { preset in
+                                let isSelected = activeQuery.caseInsensitiveCompare(preset) == .orderedSame
+                                Button(action: {
+                                    if isSelected {
+                                        viewModel.filterOptions.searchText = ""
+                                    } else {
+                                        viewModel.filterOptions.searchText = preset
+                                    }
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "folder")
+                                            .font(.system(size: 9))
+                                        Text(preset)
+                                            .font(.caption2)
+                                            .fontWeight(isSelected ? .semibold : .regular)
+                                    }
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(
+                                        Capsule()
+                                            .fill(isSelected ? Color.accentColor.opacity(0.18) : Color(nsColor: .windowBackgroundColor))
+                                    )
+                                    .foregroundColor(isSelected ? .accentColor : .primary)
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(isSelected ? Color.accentColor.opacity(0.6) : Color(nsColor: .separatorColor), lineWidth: 0.5)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .help("Filter folders matching '\(preset)'")
+                            }
+
+                            if !activeQuery.isEmpty {
+                                Button("Clear") {
+                                    viewModel.filterOptions.searchText = ""
+                                }
+                                .font(.caption2)
+                                .buttonStyle(.plain)
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 4)
+                            }
+                        }
                     }
 
                     Spacer()
@@ -92,7 +156,7 @@ struct FolderAnalyzerView: View {
                     if isSearching && !displayedFolders.isEmpty {
                         let label = activeQuery.isEmpty ? "Filtered Folders" : activeQuery
 
-                        if !matchingReclaimableFolders.isEmpty {
+                        if !isLocalOnly && !matchingReclaimableFolders.isEmpty {
                             Button(action: {
                                 viewModel.promptEvictMultipleFolders(nodes: matchingReclaimableFolders, label: label)
                             }) {
@@ -104,8 +168,10 @@ struct FolderAnalyzerView: View {
                                 .fontWeight(.medium)
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(.orange)
+                            .tint(.teal)
+                            .controlSize(.small)
                             .disabled(viewModel.isEvicting)
+                            .help("Evict local copies across all matching folders while keeping cloud copies intact.")
                         }
 
                         Button(action: {
@@ -113,87 +179,42 @@ struct FolderAnalyzerView: View {
                         }) {
                             HStack(spacing: 5) {
                                 Image(systemName: "trash")
-                                Text("Delete All \(displayedFolders.count) from Cloud")
+                                Text(isLocalOnly
+                                    ? "Delete All \(displayedFolders.count) (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)))"
+                                    : "Delete All \(displayedFolders.count)")
                             }
                             .font(.caption)
                             .fontWeight(.medium)
                         }
                         .buttonStyle(.bordered)
                         .tint(.red)
+                        .controlSize(.small)
                         .disabled(viewModel.isEvicting)
-                        .help("Permanently delete all matching folders from Mac and Cloud storage")
+                        .help(isLocalOnly
+                            ? "Permanently delete all \(displayedFolders.count) matching folders from your disk."
+                            : "Permanently delete all \(displayedFolders.count) matching folders from Mac and Cloud storage.")
                     }
 
-                    Picker("Sort by:", selection: $folderSortOption) {
+                    Picker("Sort", selection: $folderSortOption) {
                         ForEach(FolderSortField.allCases) { opt in
-                            Text(opt.rawValue).tag(opt)
+                            Text(opt.label(isLocalOnly: isLocalOnly)).tag(opt)
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(width: 220)
-                }
-
-                // Quick Folder Search Presets
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        Text("Quick Find:")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-
-                        ForEach(Self.quickPresets, id: \.self) { preset in
-                            let isSelected = activeQuery.caseInsensitiveCompare(preset) == .orderedSame
-                            Button(action: {
-                                if isSelected {
-                                    viewModel.filterOptions.searchText = ""
-                                } else {
-                                    viewModel.filterOptions.searchText = preset
-                                }
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder.badge.gearshape")
-                                        .font(.system(size: 10))
-                                    Text(preset)
-                                        .font(.caption2)
-                                        .fontWeight(isSelected ? .semibold : .regular)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(
-                                    Capsule()
-                                        .fill(isSelected ? Color.accentColor : Color(nsColor: .windowBackgroundColor))
-                                )
-                                .foregroundColor(isSelected ? .white : .primary)
-                                .overlay(
-                                    Capsule()
-                                        .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 0.5)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if !activeQuery.isEmpty {
-                            Button("Clear Search") {
-                                viewModel.filterOptions.searchText = ""
-                            }
-                            .font(.caption2)
-                            .buttonStyle(.plain)
-                            .foregroundColor(.accentColor)
-                            .padding(.leading, 4)
-                        }
-                    }
+                    .frame(width: 195)
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
 
             Divider()
 
             if viewModel.allFolders.isEmpty && viewModel.isScanning {
-                VStack(spacing: 14) {
+                VStack(spacing: 12) {
                     ProgressView()
                         .controlSize(.regular)
-                    Text("Scanning folders in \(viewModel.selectedProvider?.name ?? "drive")...")
+                    Text("Scanning folders in \(viewModel.selectedProvider?.name ?? "location")...")
                         .font(.headline)
                     Text(viewModel.scanProgressText)
                         .font(.caption)
@@ -203,28 +224,23 @@ struct FolderAnalyzerView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if displayedFolders.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "folder.badge.questionmark")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary)
+                VStack(spacing: 10) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 36))
+                        .foregroundColor(.secondary.opacity(0.6))
                     if isSearching {
-                        Text("No folders match '\(activeQuery)'")
+                        Text("No matching folders")
                             .font(.headline)
-                        Text("Try clearing the folder search or adjusting your status and size filters.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Button("Clear Folder Filters") {
+                        Button("Reset Filters") {
                             viewModel.filterOptions.searchText = ""
                             viewModel.filterOptions.statusFilter = .all
                             viewModel.filterOptions.sizeFilter = .any
                         }
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                     } else {
-                        Text("No folders found")
+                        Text("No folders indexed")
                             .font(.headline)
-                        Text("Scan a cloud drive to preview folder-level disk space consumption.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -240,11 +256,13 @@ struct FolderAnalyzerView: View {
             // Footer summary bar for Folder Analyzer
             HStack(spacing: 10) {
                 if isSearching {
-                    Text("\(displayedFolders.count.formatted()) matching folders (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)) reclaimable)")
+                    Text(isLocalOnly
+                        ? "\(displayedFolders.count.formatted()) matching folders (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)) on disk)"
+                        : "\(displayedFolders.count.formatted()) matching folders (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)) reclaimable)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
-                    Text("\(viewModel.allFolders.count.formatted()) total folders indexed across \(viewModel.folderNodes.count) top-level directories")
+                    Text("\(viewModel.allFolders.count.formatted()) folders across \(viewModel.folderNodes.count) top-level directories")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -287,84 +305,118 @@ struct FolderRowView: View {
     @State private var isExpanded: Bool = false
 
     var body: some View {
+        let isLocalOnly = viewModel.isActiveProviderLocalOnly
+
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                // Folder icon & disclosure button if has children
+            HStack(spacing: 10) {
+                // Disclosure button if has children
                 if !node.children.isEmpty {
                     Button(action: { isExpanded.toggle() }) {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                            .frame(width: 14)
+                            .frame(width: 12)
                     }
                     .buttonStyle(.plain)
                 } else {
-                    Spacer().frame(width: 14)
+                    Spacer().frame(width: 12)
                 }
 
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.accentColor)
+                // Reveal in Finder icon BEFORE folder name
+                Button(action: { viewModel.revealInFinder(url: node.url) }) {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Reveal '\(node.name)' in Finder")
 
-                VStack(alignment: .leading, spacing: 2) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 17))
+                    .foregroundColor(.secondary)
+
+                VStack(alignment: .leading, spacing: 1) {
                     Text(node.name)
                         .font(.body)
-                        .fontWeight(.semibold)
+                        .fontWeight(.medium)
 
                     Text(node.relativePath)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                        .help(node.url.path)
                 }
 
                 Spacer()
 
                 // Stats breakdown
                 VStack(alignment: .trailing, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(ByteFormatter.string(fromByteCount: node.reclaimableBytes))
-                            .fontWeight(.bold)
-                            .foregroundColor(node.reclaimableBytes > 0 ? .green : .secondary)
+                    if isLocalOnly {
+                        HStack(spacing: 6) {
+                            Text(ByteFormatter.string(fromByteCount: node.reclaimableBytes))
+                                .fontWeight(.semibold)
+                                .foregroundColor(.primary)
 
-                        Text("/ \(ByteFormatter.string(fromByteCount: node.totalCloudBytes))")
-                            .font(.caption)
+                            Text("on disk")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("\(node.totalFilesCount.formatted()) files • \(ByteFormatter.string(fromByteCount: node.totalCloudBytes)) logical")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    } else {
+                        HStack(spacing: 6) {
+                            Text(ByteFormatter.string(fromByteCount: node.reclaimableBytes))
+                                .fontWeight(.semibold)
+                                .foregroundColor(node.reclaimableBytes > 0 ? .teal : .secondary)
+
+                            Text("/ \(ByteFormatter.string(fromByteCount: node.totalCloudBytes))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("\(node.percentageString) local (\(node.downloadedFilesCount)/\(node.totalFilesCount) files)")
+                            .font(.caption2)
                             .foregroundColor(.secondary)
                     }
-
-                    Text("\(node.percentageString) downloaded (\(node.downloadedFilesCount)/\(node.totalFilesCount) files)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
                 }
-                .frame(minWidth: 160, alignment: .trailing)
+                .frame(minWidth: 165, alignment: .trailing)
 
-                // Visual Mini-Bar
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color(nsColor: .separatorColor).opacity(0.3))
-                        .frame(width: 70, height: 6)
+                if !isLocalOnly {
+                    // Visual Mini-Bar for Cloud vs Local
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color(nsColor: .separatorColor).opacity(0.3))
+                            .frame(width: 64, height: 5)
 
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(node.reclaimableBytes > 0 ? Color.green : Color.clear)
-                        .frame(width: max(0, min(70, 70 * CGFloat(node.percentageReclaimable / 100.0))), height: 6)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(node.reclaimableBytes > 0 ? Color.teal.opacity(0.85) : Color.clear)
+                            .frame(width: max(0, min(64, 64 * CGFloat(node.percentageReclaimable / 100.0))), height: 5)
+                    }
+                    .frame(width: 64)
+                    .help("\(node.percentageString) of this folder's cloud size is currently stored on local disk.")
                 }
-                .frame(width: 70)
 
                 // Actions
-                HStack(spacing: 8) {
-                    // Recursive evict local copies button
-                    Button(action: { viewModel.promptEvictFolder(node: node) }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.up.to.line.compact")
-                            Text("Evict Local")
+                HStack(spacing: 6) {
+                    if !isLocalOnly {
+                        // Recursive evict local copies button
+                        Button(action: { viewModel.promptEvictFolder(node: node) }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.up.to.line.compact")
+                                Text("Evict")
+                            }
+                            .font(.caption)
                         }
-                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .tint(.teal)
+                        .controlSize(.small)
+                        .disabled(node.reclaimableBytes == 0 || viewModel.isEvicting)
+                        .help("Evict downloaded files in '\(node.name)' to reclaim local space (remains in cloud)")
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                    .disabled(node.reclaimableBytes == 0 || viewModel.isEvicting)
-                    .help("Recursively evict all downloaded files in this folder (remains in cloud)")
 
-                    // Delete from Mac & Cloud button
+                    // Delete button
                     Button(action: { viewModel.promptDeleteFolder(node: node) }) {
                         HStack(spacing: 4) {
                             Image(systemName: "trash")
@@ -374,8 +426,11 @@ struct FolderRowView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(.red)
+                    .controlSize(.small)
                     .disabled(viewModel.isEvicting)
-                    .help("Permanently delete this folder from your Mac and from Cloud storage")
+                    .help(isLocalOnly
+                        ? "Permanently delete '\(node.name)' from your Mac"
+                        : "Permanently delete '\(node.name)' from your Mac and Cloud storage")
 
                     // Filter files to this folder
                     Button(action: {
@@ -386,19 +441,12 @@ struct FolderRowView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)
-                    .help("View files in this folder")
-
-                    // Reveal in Finder
-                    Button(action: { viewModel.revealInFinder(url: node.url) }) {
-                        Image(systemName: "folder")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Reveal in Finder")
+                    .controlSize(.small)
+                    .help("Inspect individual files in '\(node.name)'")
                 }
             }
             .contextMenu {
-                if node.reclaimableBytes > 0 {
+                if !isLocalOnly && node.reclaimableBytes > 0 {
                     Button {
                         viewModel.promptEvictFolder(node: node)
                     } label: {
@@ -409,7 +457,7 @@ struct FolderRowView: View {
                 Button(role: .destructive) {
                     viewModel.promptDeleteFolder(node: node)
                 } label: {
-                    Label("Delete '\(node.name)' from Mac & Cloud...", systemImage: "trash")
+                    Label(isLocalOnly ? "Delete '\(node.name)'..." : "Delete '\(node.name)' from Mac & Cloud...", systemImage: "trash")
                 }
 
                 Divider()
@@ -424,7 +472,7 @@ struct FolderRowView: View {
                 Button {
                     viewModel.revealInFinder(url: node.url)
                 } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
+                    Label("Reveal in Finder", systemImage: "arrow.up.forward.square")
                 }
             }
 
@@ -433,12 +481,12 @@ struct FolderRowView: View {
                 VStack(spacing: 6) {
                     ForEach(node.children) { child in
                         FolderRowView(node: child, viewModel: viewModel)
-                            .padding(.leading, 24)
+                            .padding(.leading, 22)
                     }
                 }
                 .padding(.top, 4)
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
     }
 }

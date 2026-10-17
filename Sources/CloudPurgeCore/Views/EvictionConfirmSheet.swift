@@ -16,44 +16,50 @@ struct EvictionConfirmSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
-            // Mode Switcher (Evict Local Only vs Delete from Mac & Cloud)
-            Picker("", selection: $viewModel.pendingActionMode) {
-                Text("Evict Local Copy (Safe)").tag(PurgeActionMode.evictLocalOnly)
-                Text("Delete from Mac & Cloud").tag(PurgeActionMode.deleteEverywhere)
+        let isLocalOnly = viewModel.isActiveProviderLocalOnly
+
+        VStack(spacing: 16) {
+            if !isLocalOnly {
+                // Mode Switcher (Evict Local Only vs Delete from Mac & Cloud)
+                Picker("", selection: $viewModel.pendingActionMode) {
+                    Text("Evict Local Copy (Safe)").tag(PurgeActionMode.evictLocalOnly)
+                    Text("Delete from Mac & Cloud").tag(PurgeActionMode.deleteEverywhere)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 400)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 400)
 
             // Header
-            VStack(spacing: 8) {
+            VStack(spacing: 6) {
                 Image(systemName: isPermanentDelete ? "exclamationmark.triangle.fill" : "arrow.up.to.line.circle.fill")
-                    .font(.system(size: 42))
-                    .foregroundColor(isPermanentDelete ? .red : .orange)
+                    .font(.system(size: 38))
+                    .foregroundColor(isPermanentDelete ? .red : .teal)
 
                 Text(viewModel.pendingEvictionTitle)
                     .font(.title2)
                     .fontWeight(.bold)
 
                 Text(viewModel.pendingEvictionDescription)
-                    .font(.body)
+                    .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 480)
             }
 
-            // Explicit Warning Banner when Permanent Cloud Deletion is selected
+            // Explicit Warning Banner when Permanent Deletion is selected
             if isPermanentDelete {
                 HStack(spacing: 10) {
                     Image(systemName: "trash.slash.fill")
                         .font(.title3)
                         .foregroundColor(.red)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Permanent Cloud & Local Deletion")
+                        Text(isLocalOnly ? "Permanent Local Deletion" : "Permanent Cloud & Local Deletion")
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.red)
-                        Text("These files/folders will be deleted from your Mac AND removed from iCloud Drive / Google Drive across all synced devices.")
+                        Text(isLocalOnly
+                            ? "These files/folders will be permanently removed from your Mac disk."
+                            : "These files/folders will be deleted from your Mac AND removed from iCloud Drive / Google Drive across all synced devices.")
                             .font(.caption2)
                             .foregroundColor(.primary)
                     }
@@ -62,10 +68,10 @@ struct EvictionConfirmSheet: View {
                 .padding(12)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.red.opacity(0.12))
+                        .fill(Color.red.opacity(0.10))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.red.opacity(0.4), lineWidth: 1)
+                                .stroke(Color.red.opacity(0.35), lineWidth: 1)
                         )
                 )
                 .frame(maxWidth: 480)
@@ -74,17 +80,17 @@ struct EvictionConfirmSheet: View {
             // Highlight Box
             HStack(spacing: 24) {
                 VStack(spacing: 2) {
-                    Text("Local Disk Freed")
+                    Text(isLocalOnly ? "Disk Space Freed" : "Local Disk Freed")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(ByteFormatter.string(fromByteCount: totalBytesToReclaim))
                         .font(.title3)
                         .fontWeight(.bold)
-                        .foregroundColor(.green)
+                        .foregroundColor(.teal)
                 }
 
                 Divider()
-                    .frame(height: 36)
+                    .frame(height: 32)
 
                 VStack(spacing: 2) {
                     Text(isPermanentDelete ? "Files to Delete" : "Files to Evict")
@@ -96,28 +102,30 @@ struct EvictionConfirmSheet: View {
                         .foregroundColor(.primary)
                 }
 
-                Divider()
-                    .frame(height: 36)
+                if !isLocalOnly {
+                    Divider()
+                        .frame(height: 32)
 
-                VStack(spacing: 2) {
-                    Text("Cloud Status")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    if isPermanentDelete {
-                        Text("-\(ByteFormatter.string(fromByteCount: totalCloudBytesAffected)) Deleted")
-                            .font(.title3)
-                            .fontWeight(.bold)
-                            .foregroundColor(.red)
-                    } else {
-                        Text("100% Preserved")
-                            .font(.title3)
-                            .fontWeight(.bold)
-                            .foregroundColor(.blue)
+                    VStack(spacing: 2) {
+                        Text("Cloud Status")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        if isPermanentDelete {
+                            Text("-\(ByteFormatter.string(fromByteCount: totalCloudBytesAffected)) Deleted")
+                                .font(.title3)
+                                .fontWeight(.bold)
+                                .foregroundColor(.red)
+                        } else {
+                            Text("100% Preserved")
+                                .font(.title3)
+                                .fontWeight(.bold)
+                                .foregroundColor(.teal)
+                        }
                     }
                 }
             }
             .padding(.horizontal, 24)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 10)
                     .fill(Color(nsColor: .controlBackgroundColor))
@@ -142,7 +150,7 @@ struct EvictionConfirmSheet: View {
                                 HStack {
                                     Image(systemName: "folder.fill")
                                         .font(.caption)
-                                        .foregroundColor(isPermanentDelete ? .red : .accentColor)
+                                        .foregroundColor(isPermanentDelete ? .red : .secondary)
                                     Text(folderURL.path)
                                         .font(.caption)
                                         .lineLimit(1)
@@ -168,7 +176,7 @@ struct EvictionConfirmSheet: View {
                                     Text(ByteFormatter.string(fromByteCount: isPermanentDelete ? item.fileSize : item.allocatedSize))
                                         .font(.caption)
                                         .fontWeight(.medium)
-                                        .foregroundColor(isPermanentDelete ? .red : .green)
+                                        .foregroundColor(isPermanentDelete ? .red : .teal)
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
@@ -198,17 +206,19 @@ struct EvictionConfirmSheet: View {
                 }) {
                     HStack(spacing: 6) {
                         Image(systemName: isPermanentDelete ? "trash.fill" : "arrow.up.to.line.compact")
-                        Text(isPermanentDelete ? "Delete from Mac & Cloud" : "Evict Local Copies")
+                        Text(isPermanentDelete
+                            ? (isLocalOnly ? "Delete Permanently" : "Delete from Mac & Cloud")
+                            : "Evict Local Copies")
                     }
                     .fontWeight(.semibold)
                     .frame(minWidth: 180)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(isPermanentDelete ? .red : .orange)
+                .tint(isPermanentDelete ? .red : .teal)
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(26)
+        .padding(24)
         .frame(width: 560)
     }
 }

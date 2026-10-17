@@ -34,6 +34,21 @@ public struct CloudProvider: Identifiable, Hashable, Sendable {
     public var totalFilesCount: Int = 0
     public var downloadedFilesCount: Int = 0
 
+    /// Returns true if this source is backed by a cloud sync provider (iCloud Drive, Google Drive, OneDrive, Dropbox, or a custom subfolder inside one).
+    public var isCloudBacked: Bool {
+        if type != .custom {
+            return true
+        }
+        let standardized = rootURL.standardizedFileURL.path
+        return standardized.contains("/Library/Mobile Documents/") ||
+               standardized.contains("/Library/CloudStorage/")
+    }
+
+    /// Returns true if this source is a pure local folder/drive (where "evict" and "reclaimable" do not apply).
+    public var isLocalOnly: Bool {
+        !isCloudBacked
+    }
+
     public init(
         id: String,
         name: String,

@@ -475,4 +475,37 @@ final class CloudPurgeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file1, encoding: .utf8), payload)
         XCTAssertEqual(try String(contentsOf: file2, encoding: .utf8), payload)
     }
+
+    func testExcludeCloudStoragePathsInLocalScan() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("LocalExcludeCloudTest_\(UUID().uuidString)")
+        let localDir = tempDir.appendingPathComponent("Projects")
+        let cloudMountDir = tempDir.appendingPathComponent("Library/CloudStorage/GoogleDrive-user@example.com")
+        let dropboxDir = tempDir.appendingPathComponent("Dropbox")
+        try FileManager.default.createDirectory(at: localDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cloudMountDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dropboxDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try "local file".write(to: localDir.appendingPathComponent("main.swift"), atomically: true, encoding: .utf8)
+        try "cloud file".write(to: cloudMountDir.appendingPathComponent("doc.pdf"), atomically: true, encoding: .utf8)
+        try "dropbox file".write(to: dropboxDir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let localProvider = CloudProvider(id: "local-1", name: "Local", type: .custom, rootURL: tempDir)
+        XCTAssertTrue(localProvider.isLocalOnly)
+
+        let excludedScan = try await CloudScanner.shared.scan(
+            rootURL: tempDir,
+            providerId: localProvider.id,
+            excludeCloudStoragePaths: true
+        )
+        XCTAssertEqual(excludedScan.items.count, 1)
+        XCTAssertEqual(excludedScan.items.first?.name, "main.swift")
+
+        let fullScan = try await CloudScanner.shared.scan(
+            rootURL: tempDir,
+            providerId: localProvider.id,
+            excludeCloudStoragePaths: false
+        )
+        XCTAssertEqual(fullScan.items.count, 3)
+    }
 }

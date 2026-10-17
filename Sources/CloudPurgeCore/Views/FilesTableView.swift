@@ -10,21 +10,25 @@ struct FilesTableView: View {
         return formatter
     }()
 
+    private var isLocalOnly: Bool {
+        viewModel.isActiveProviderLocalOnly
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Optional active folder filter banner
             if let folderPrefix = viewModel.filterOptions.selectedFolderPrefix, !folderPrefix.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "folder.fill")
-                        .foregroundColor(.accentColor)
-                    Text("Filtered to folder:")
+                        .foregroundColor(.secondary)
+                    Text("Folder:")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(folderPrefix)
                         .font(.caption)
                         .fontWeight(.semibold)
                     Spacer()
-                    Button("Clear Folder Filter") {
+                    Button("Clear Filter") {
                         viewModel.filterOptions.selectedFolderPrefix = nil
                     }
                     .font(.caption)
@@ -33,7 +37,7 @@ struct FilesTableView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 6)
-                .background(Color.accentColor.opacity(0.08))
+                .background(Color(nsColor: .controlBackgroundColor))
                 Divider()
             }
 
@@ -43,12 +47,12 @@ struct FilesTableView: View {
                         Image(systemName: "pause.circle.fill")
                             .font(.system(size: 36))
                             .foregroundColor(.orange)
-                        Text("Scan Paused (\(viewModel.selectedProvider?.name ?? "cloud files"))")
+                        Text("Scan Paused (\(viewModel.selectedProvider?.name ?? "files"))")
                             .font(.headline)
                     } else {
                         ProgressView()
                             .controlSize(.regular)
-                        Text("Scanning \(viewModel.selectedProvider?.name ?? "cloud files")...")
+                        Text("Scanning \(viewModel.selectedProvider?.name ?? "files")...")
                             .font(.headline)
                     }
                     Text(viewModel.scanProgressText)
@@ -62,7 +66,7 @@ struct FilesTableView: View {
                             viewModel.togglePauseScan()
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(viewModel.isPaused ? .green : .orange)
+                        .tint(viewModel.isPaused ? .teal : .orange)
                         .controlSize(.small)
 
                         Button("Stop Scan") {
@@ -85,26 +89,34 @@ struct FilesTableView: View {
             } else if viewModel.displayedItems.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "tray")
-                        .font(.system(size: 40))
+                        .font(.system(size: 36))
                         .foregroundColor(.secondary)
                     Text("No files match the active filters")
                         .font(.headline)
-                    Text("Try clearing search or adjusting your status, size, and age filters.")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Button("Reset All Filters") {
+                    Button("Reset Filters") {
                         viewModel.filterOptions = FilterOptions()
                     }
                     .buttonStyle(.bordered)
+                    .help("Clear search text and reset status, size, age, and kind filters.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Table(viewModel.displayedItems, selection: $viewModel.selectedItemIds) {
                     TableColumn("Name") { item in
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            // Reveal in Finder icon placed right before the file icon/name
+                            Button(action: { viewModel.revealInFinder(url: item.url) }) {
+                                Image(systemName: "arrow.up.forward.square")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Reveal '\(item.name)' in Finder")
+
                             Image(systemName: item.kind.icon)
                                 .foregroundColor(.secondary)
-                                .frame(width: 18)
+                                .frame(width: 16)
+
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(item.name)
                                     .fontWeight(.medium)
@@ -114,16 +126,17 @@ struct FilesTableView: View {
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                             }
+                            .help(item.path)
                         }
                     }
-                    .width(min: 220, ideal: 300)
+                    .width(min: 230, ideal: 320)
 
-                    TableColumn("Local Disk") { item in
+                    TableColumn(isLocalOnly ? "Size on Disk" : "Local Disk") { item in
                         HStack(spacing: 4) {
-                            if item.isReclaimable {
+                            if item.allocatedSize > 0 {
                                 Text(ByteFormatter.string(fromByteCount: item.allocatedSize))
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.green)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.primary)
                             } else {
                                 Text("0 B")
                                     .foregroundColor(.secondary)
@@ -132,16 +145,16 @@ struct FilesTableView: View {
                     }
                     .width(min: 90, ideal: 110)
 
-                    TableColumn("Cloud Size") { item in
+                    TableColumn(isLocalOnly ? "Logical Size" : "Cloud Size") { item in
                         Text(ByteFormatter.string(fromByteCount: item.fileSize))
                             .foregroundColor(.secondary)
                     }
                     .width(min: 80, ideal: 100)
 
                     TableColumn("Status") { item in
-                        StatusBadge(status: item.syncStatus)
+                        StatusBadge(status: item.syncStatus, isLocalOnly: isLocalOnly)
                     }
-                    .width(min: 130, ideal: 150)
+                    .width(min: 115, ideal: 135)
 
                     TableColumn("Modified") { item in
                         Text(formattedDate(item.modificationDate))
@@ -152,66 +165,68 @@ struct FilesTableView: View {
 
                     TableColumn("Actions") { item in
                         HStack(spacing: 8) {
-                            if item.isReclaimable {
-                                Button(action: { viewModel.evictSingle(item: item) }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "arrow.up.to.line.compact")
-                                        Text("Evict")
+                            if !isLocalOnly {
+                                if item.isReclaimable {
+                                    Button(action: { viewModel.evictSingle(item: item) }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "arrow.up.to.line.compact")
+                                            Text("Evict")
+                                        }
+                                        .font(.caption)
                                     }
-                                    .font(.caption)
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(.orange)
-                                .help("Evict local copy to free disk space (remains in cloud)")
-                            } else if item.syncStatus == .cloudOnly {
-                                Button(action: { viewModel.downloadItem(item: item) }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "arrow.down.circle")
-                                        Text("Download")
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .help("Evict local copy to free disk space (remains in cloud)")
+                                } else if item.syncStatus == .cloudOnly {
+                                    Button(action: { viewModel.downloadItem(item: item) }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "arrow.down.circle")
+                                            Text("Download")
+                                        }
+                                        .font(.caption)
                                     }
-                                    .font(.caption)
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .help("Download file from cloud")
                                 }
-                                .buttonStyle(.bordered)
-                                .help("Download file from cloud")
                             }
 
                             Button(action: { viewModel.deleteSingle(item: item) }) {
-                                Image(systemName: "trash")
-                                    .font(.caption)
-                                    .foregroundColor(.red.opacity(0.8))
+                                HStack(spacing: 3) {
+                                    Image(systemName: "trash")
+                                    if isLocalOnly {
+                                        Text("Delete")
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                             }
-                            .buttonStyle(.plain)
-                            .help("Delete permanently from Mac & Cloud")
-
-                            Button(action: { viewModel.revealInFinder(url: item.url) }) {
-                                Image(systemName: "folder")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Reveal in Finder")
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help(isLocalOnly ? "Delete file from disk" : "Delete permanently from Mac & Cloud")
                         }
                     }
-                    .width(min: 155, ideal: 175)
+                    .width(min: 115, ideal: 145)
                 }
                 .contextMenu(forSelectionType: UUID.self) { selectedIds in
                     let selectedItems = viewModel.displayedItems.filter { selectedIds.contains($0.id) }
                     let reclaimable = selectedItems.filter { $0.isReclaimable }
 
-                    if !reclaimable.isEmpty {
+                    if !isLocalOnly && !reclaimable.isEmpty {
                         Button("Evict Local Copies (\(reclaimable.count) files)") {
                             viewModel.promptEvictSelection()
                         }
                     }
 
                     if !selectedItems.isEmpty {
-                        Button("Delete from Mac & Cloud (\(selectedItems.count) files)...", role: .destructive) {
+                        Button(isLocalOnly ? "Delete (\(selectedItems.count) files)..." : "Delete from Mac & Cloud (\(selectedItems.count) files)...", role: .destructive) {
                             viewModel.promptDeleteSelection()
                         }
                     }
 
                     if selectedItems.count == 1, let single = selectedItems.first {
                         Divider()
-                        if single.syncStatus == .cloudOnly {
+                        if !isLocalOnly && single.syncStatus == .cloudOnly {
                             Button("Download Now") {
                                 viewModel.downloadItem(item: single)
                             }
@@ -298,17 +313,21 @@ struct FilesTableView: View {
 
 struct StatusBadge: View {
     let status: SyncStatus
+    var isLocalOnly: Bool = false
 
     var body: some View {
+        let displayLabel = (isLocalOnly && status == .downloaded) ? "On Disk" : status.rawValue
+        let displayIcon = (isLocalOnly && status == .downloaded) ? "internaldrive" : status.iconName
+
         HStack(spacing: 4) {
-            Image(systemName: status.iconName)
+            Image(systemName: displayIcon)
                 .font(.caption2)
-            Text(status.rawValue)
+            Text(displayLabel)
                 .font(.caption)
                 .fontWeight(.medium)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
         .background(
             Capsule()
                 .fill(color(for: status).opacity(0.12))
@@ -317,9 +336,12 @@ struct StatusBadge: View {
     }
 
     private func color(for status: SyncStatus) -> Color {
+        if isLocalOnly && status == .downloaded {
+            return .secondary
+        }
         switch status {
-        case .downloaded: return .green
-        case .cloudOnly: return .blue
+        case .downloaded: return .teal
+        case .cloudOnly: return .secondary
         case .uploading, .downloading: return .orange
         case .conflict, .unsynced: return .red
         }

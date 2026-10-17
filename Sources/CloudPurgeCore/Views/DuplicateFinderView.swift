@@ -32,6 +32,8 @@ struct DuplicateFinderView: View {
     }
 
     var body: some View {
+        let isLocalOnly = viewModel.isActiveProviderLocalOnly
+
         VStack(spacing: 0) {
             // Top Duplicate Controls Bar
             HStack(spacing: 12) {
@@ -41,7 +43,8 @@ struct DuplicateFinderView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 265)
+                .frame(width: 260)
+                .help("Choose whether to scan only the selected location or across all scanned drives and folders.")
 
                 Picker("Min Size", selection: $viewModel.duplicateMinSizeBytes) {
                     ForEach(minSizeOptions, id: \.bytes) { opt in
@@ -49,12 +52,20 @@ struct DuplicateFinderView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 145)
+                .frame(width: 135)
+                .help("Minimum file size to include in duplicate detection.")
 
-                Toggle("Match Cloud-Only by Name+Size", isOn: $viewModel.duplicateIncludeCloudOnly)
-                    .toggleStyle(.checkbox)
+                if !isLocalOnly || viewModel.duplicateScanScope == .allScannedSources {
+                    Toggle("Include Cloud-Only", isOn: $viewModel.duplicateIncludeCloudOnly)
+                        .toggleStyle(.checkbox)
+                        .font(.caption)
+                        .help("Downloaded files are verified via 3-stage SHA-256 hashing without downloading cloud-only files. Enable this to also group cloud-only placeholders that share identical byte size and filename.")
+                }
+
+                Image(systemName: "info.circle")
                     .font(.caption)
-                    .help("Downloaded files are verified via SHA-256 content hashes without downloading cloud-only files. Enable this to also group cloud-only placeholders that share identical byte size and filename.")
+                    .foregroundColor(.secondary)
+                    .help("Select a Primary (Keep) file in each group, then replace duplicates with a POSIX Symbolic Link, macOS Finder Alias, APFS Copy-on-Write Clone, or move Primary files to a canonical folder.")
 
                 Spacer()
 
@@ -63,7 +74,7 @@ struct DuplicateFinderView: View {
                         value: Double(viewModel.duplicateScanProcessed),
                         total: Double(max(1, viewModel.duplicateScanTotal))
                     )
-                    .frame(width: 110)
+                    .frame(width: 100)
 
                     Button(action: { viewModel.stopDuplicateScan() }) {
                         Label("Stop", systemImage: "stop.fill")
@@ -72,12 +83,13 @@ struct DuplicateFinderView: View {
                     .controlSize(.small)
                 } else {
                     Button(action: { viewModel.startDuplicateScan() }) {
-                        Label("Find Duplicates", systemImage: "sparkle.magnifyingglass")
+                        Label("Find Duplicates", systemImage: "doc.on.doc")
                             .fontWeight(.medium)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.indigo)
+                    .tint(.teal)
                     .controlSize(.small)
+                    .help("Run 3-stage SHA-256 duplicate scan (Stage 1: exact size, Stage 2: 64 KB head/tail hash, Stage 3: full SHA-256).")
                 }
 
                 if !filteredDuplicateGroups.isEmpty {
@@ -89,78 +101,58 @@ struct DuplicateFinderView: View {
                             : viewModel.selectedDuplicateGroupIds.count
                         Label(
                             viewModel.selectedDuplicateGroupIds.isEmpty
-                                ? "Resolve All (\(count) Groups)..."
+                                ? "Resolve All (\(count))..."
                                 : "Resolve Selected (\(count))...",
-                            systemImage: "link.badge.plus"
+                            systemImage: "link"
                         )
                         .fontWeight(.medium)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.purple)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .help("Replace duplicate copies with links, aliases, APFS clones, or move to Trash.")
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-
-            Divider()
-
-            // Platform Compatibility Guidance Banner
-            HStack(spacing: 10) {
-                Image(systemName: "info.circle.fill")
-                    .foregroundColor(.purple)
-                Text("Select a **Primary (Keep)** file in each duplicate group, then replace the remaining copies with a **POSIX Symbolic Link** (best for local drives & code/CLI), a **macOS Finder Alias** (cloud-safe for iCloud Drive & Google Drive), or an **APFS Copy-on-Write Clone** (0 extra local SSD space).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 7)
-            .background(Color.purple.opacity(0.06))
+            .padding(.vertical, 9)
+            .background(Color(nsColor: .controlBackgroundColor))
 
             Divider()
 
             // Duplicate Groups Content
             if viewModel.isScanningDuplicates && viewModel.duplicateGroups.isEmpty {
-                VStack(spacing: 14) {
+                VStack(spacing: 12) {
                     ProgressView()
-                        .controlSize(.large)
+                        .controlSize(.regular)
                     Text(viewModel.duplicateScanProgressText)
                         .font(.headline)
-                    Text("Stage 1: Exact byte size grouping → Stage 2: 64 KB head/tail fingerprint → Stage 3: Full SHA-256 verification")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredDuplicateGroups.isEmpty {
-                VStack(spacing: 14) {
+                VStack(spacing: 12) {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 42))
+                        .font(.system(size: 38))
                         .foregroundColor(.secondary.opacity(0.6))
 
-                    Text(viewModel.duplicateGroups.isEmpty ? "Ready to Find Duplicate Files" : "No Duplicates Match Search Filter")
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                    Text(viewModel.duplicateGroups.isEmpty ? "Find Duplicate Files" : "No Matching Duplicates")
+                        .font(.headline)
 
-                    Text("Click **Find Duplicates** above to scan your current drive or across all scanned drives (both Cloud Drives and Local Custom Folders). CloudPurge uses a 3-stage SHA-256 pipeline and never triggers unwanted cloud downloads.")
-                        .font(.callout)
+                    Text("3-stage SHA-256 verification across local and cloud files.")
+                        .font(.caption)
                         .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 500)
+                        .help("Stage 1: Exact byte size grouping → Stage 2: 64 KB head/tail fingerprint → Stage 3: Full SHA-256 verification. Never triggers unwanted cloud downloads.")
 
                     Button(action: { viewModel.startDuplicateScan() }) {
-                        Label("Start Duplicate Scan", systemImage: "sparkle.magnifyingglass")
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                        Label("Start Duplicate Scan", systemImage: "doc.on.doc")
+                            .padding(.horizontal, 6)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.indigo)
+                    .tint(.teal)
+                    .controlSize(.regular)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 12) {
+                    LazyVStack(spacing: 10) {
                         ForEach(filteredDuplicateGroups) { group in
                             DuplicateGroupCard(
                                 group: group,
@@ -190,18 +182,25 @@ struct DuplicateFinderView: View {
                         }
                         .buttonStyle(.plain)
                         .font(.caption)
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(.secondary)
                     } else {
                         Button("Select All (\(filteredDuplicateGroups.count))") {
                             viewModel.selectedDuplicateGroupIds = Set(filteredDuplicateGroups.map { $0.id })
                         }
                         .buttonStyle(.plain)
                         .font(.caption)
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(.secondary)
                     }
 
-                    Text("Redundant Space: **\(ByteFormatter.string(fromByteCount: totalRedundantLocalBytes))** local / **\(ByteFormatter.string(fromByteCount: totalRedundantLogicalBytes))** total")
-                        .font(.caption)
+                    if totalRedundantLocalBytes == totalRedundantLogicalBytes {
+                        Text("Redundant Space: **\(ByteFormatter.string(fromByteCount: totalRedundantLocalBytes))** on disk")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Redundant Space: **\(ByteFormatter.string(fromByteCount: totalRedundantLocalBytes))** on disk • **\(ByteFormatter.string(fromByteCount: totalRedundantLogicalBytes))** logical")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -234,95 +233,103 @@ struct DuplicateGroupCard: View {
                 .buttonStyle(.plain)
 
                 Image(systemName: group.kind.icon)
-                    .foregroundColor(.indigo)
-                    .font(.system(size: 15))
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 14))
 
                 Text(group.sampleName)
-                    .font(.headline)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
                     .lineLimit(1)
 
-                Text("\(group.items.count) identical copies • \(ByteFormatter.string(fromByteCount: group.fileSize)) each")
+                Text("\(group.items.count) copies • \(ByteFormatter.string(fromByteCount: group.fileSize)) each")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
                 if group.isVerifiedFullHash {
                     HStack(spacing: 3) {
-                        Image(systemName: "checkmark.shield.fill")
-                        Text("SHA-256 Verified")
+                        Image(systemName: "checkmark.shield")
+                        Text("SHA-256")
                     }
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.green.opacity(0.14)))
-                    .foregroundColor(.green)
-                    .help("SHA-256: \(group.contentHash)")
+                    .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                    .foregroundColor(.secondary)
+                    .help("Verified identical via full SHA-256 content hash: \(group.contentHash)")
                 } else {
                     HStack(spacing: 3) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                        Text("Cloud Size+Name Match")
+                        Text("Size + Name Match")
                     }
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.orange.opacity(0.14)))
+                    .background(Capsule().fill(Color.orange.opacity(0.15)))
                     .foregroundColor(.orange)
-                    .help("Matched by exact byte size and filename without downloading cloud-only files.")
+                    .help("Includes cloud-only placeholder files matched by exact byte size and filename without downloading.")
                 }
 
                 Spacer()
 
                 if group.reclaimableLocalBytes > 0 {
-                    Text("Saves \(ByteFormatter.string(fromByteCount: group.reclaimableLocalBytes)) local (\(ByteFormatter.string(fromByteCount: group.redundantLogicalBytes)) cloud)")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.green)
+                    if group.reclaimableLocalBytes == group.redundantLogicalBytes {
+                        Text("\(ByteFormatter.string(fromByteCount: group.reclaimableLocalBytes)) redundant on disk")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.teal)
+                    } else {
+                        Text("\(ByteFormatter.string(fromByteCount: group.reclaimableLocalBytes)) on disk (\(ByteFormatter.string(fromByteCount: group.redundantLogicalBytes)) logical)")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.teal)
+                    }
                 } else {
-                    Text("Saves \(ByteFormatter.string(fromByteCount: group.redundantLogicalBytes)) cloud")
+                    Text("\(ByteFormatter.string(fromByteCount: group.redundantLogicalBytes)) in cloud")
                         .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.blue)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
                 }
 
                 Button(action: {
                     viewModel.promptResolveDuplicateGroup(group)
                 }) {
-                    Label("Link / Resolve...", systemImage: "link")
+                    Label("Resolve...", systemImage: "link")
                         .font(.caption)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
+                .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Link or resolve duplicate copies in this group")
             }
 
             Divider()
 
             // Copies List (Radio button to choose Primary)
-            VStack(spacing: 4) {
+            VStack(spacing: 3) {
                 ForEach(group.items) { item in
                     let isPrimary = (item.id == group.primaryItem?.id)
                     let provName = viewModel.providerName(for: item.providerId)
                     let provType = viewModel.providerType(for: item.providerId)
 
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Button(action: {
                             viewModel.setPrimaryItem(groupId: group.id, itemId: item.id)
                         }) {
                             HStack(spacing: 5) {
                                 Image(systemName: isPrimary ? "largecircle.fill.circle" : "circle")
-                                    .foregroundColor(isPrimary ? .green : .secondary)
-                                Text(isPrimary ? "PRIMARY (KEEP)" : "DUPLICATE (LINK)")
-                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(isPrimary ? .teal : .secondary)
+                                Text(isPrimary ? "Primary (Keep)" : "Duplicate")
+                                    .font(.system(size: 10, weight: isPrimary ? .semibold : .regular))
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
                                     .background(
-                                        Capsule().fill(isPrimary ? Color.green.opacity(0.18) : Color.purple.opacity(0.14))
+                                        Capsule().fill(isPrimary ? Color.teal.opacity(0.14) : Color.secondary.opacity(0.10))
                                     )
-                                    .foregroundColor(isPrimary ? .green : .purple)
+                                    .foregroundColor(isPrimary ? .teal : .secondary)
                             }
                         }
                         .buttonStyle(.plain)
-                        .frame(width: 142, alignment: .leading)
-                        .help(isPrimary ? "This copy will be preserved as the Primary target." : "Click to make this copy the Primary file to keep.")
+                        .frame(width: 120, alignment: .leading)
+                        .help(isPrimary ? "Preserved as the Primary target." : "Click to set this copy as the Primary file to keep.")
 
                         // Source Drive Badge
                         HStack(spacing: 4) {
@@ -334,8 +341,19 @@ struct DuplicateGroupCard: View {
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.12)))
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.10)))
                         .foregroundColor(.secondary)
+
+                        // Reveal in Finder icon BEFORE file name/path
+                        Button(action: {
+                            viewModel.revealInFinder(url: item.url)
+                        }) {
+                            Image(systemName: "arrow.up.forward.square")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reveal '\(item.name)' in Finder")
 
                         // Relative Path
                         Text(item.relativePath)
@@ -350,37 +368,29 @@ struct DuplicateGroupCard: View {
                         if item.isDataless {
                             Text("Cloud-Only")
                                 .font(.caption2)
-                                .foregroundColor(.blue)
+                                .foregroundColor(.secondary)
+                                .help("Dataless cloud placeholder (0 bytes on local disk)")
                         } else {
                             Text("\(ByteFormatter.string(fromByteCount: item.allocatedSize)) on disk")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
-
-                        Button(action: {
-                            viewModel.revealInFinder(url: item.url)
-                        }) {
-                            Image(systemName: "magnifyingglass.circle")
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Reveal in Finder")
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 4)
                     .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(isPrimary ? Color.green.opacity(0.06) : Color.clear)
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(isPrimary ? Color.teal.opacity(0.05) : Color.clear)
                     )
                 }
             }
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .controlBackgroundColor))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: 8)
                         .stroke(isSelected ? Color.accentColor.opacity(0.6) : Color(nsColor: .separatorColor).opacity(0.5), lineWidth: isSelected ? 1.5 : 0.5)
                 )
         )

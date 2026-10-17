@@ -41,6 +41,15 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 4)
+                .help("Add any local disk folder, external volume, or cloud sync subfolder to scan.")
+
+                if !customProviders.isEmpty {
+                    Toggle("Exclude Cloud Mounts in Local Scans", isOn: $viewModel.excludeCloudFilesInLocalScans)
+                        .toggleStyle(.checkbox)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .help("When scanning a local folder (such as your Home directory), automatically skip ~/Library/CloudStorage, iCloud Drive, and cloud placeholder files.")
+                }
             }
         }
         .listStyle(.sidebar)
@@ -54,6 +63,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(.secondary)
+                    .help("Re-detect connected cloud services and custom folders")
 
                     Spacer()
 
@@ -67,6 +77,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(.accentColor)
+                    .help("Start scanning all drives and folders in the list")
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
@@ -78,17 +89,20 @@ struct SidebarView: View {
     @ViewBuilder
     private func providerRow(_ provider: CloudProvider) -> some View {
         let pState = viewModel.state(for: provider.id)
+        let isLocal = provider.isLocalOnly
+
         HStack(spacing: 10) {
-            Image(systemName: provider.type.systemIcon)
-                .font(.system(size: 18))
-                .foregroundColor(providerColor(provider.type))
-                .frame(width: 24)
+            Image(systemName: isLocal ? "folder.fill" : provider.type.systemIcon)
+                .font(.system(size: 16))
+                .foregroundColor(providerColor(provider))
+                .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(provider.name)
                     .font(.body)
                     .fontWeight(.medium)
                     .lineLimit(1)
+                    .help(provider.rootURL.path)
 
                 if pState.isScanning && pState.isPaused {
                     Text("Paused (\(pState.scannedCount.formatted()) files) • \(ByteFormatter.string(fromByteCount: pState.reclaimableBytes))")
@@ -98,13 +112,20 @@ struct SidebarView: View {
                 } else if pState.isScanning {
                     Text("Scanning (\(pState.scannedCount.formatted()) files) • \(ByteFormatter.string(fromByteCount: pState.reclaimableBytes))")
                         .font(.caption2)
-                        .foregroundColor(.accentColor)
-                        .lineLimit(1)
-                } else if pState.hasCompletedScan || !pState.items.isEmpty || provider.totalCloudBytes > 0 {
-                    Text("\(ByteFormatter.string(fromByteCount: pState.reclaimableBytes)) local / \(ByteFormatter.string(fromByteCount: pState.totalCloudBytes))")
-                        .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                } else if pState.hasCompletedScan || !pState.items.isEmpty || provider.totalCloudBytes > 0 {
+                    if isLocal {
+                        Text("\(ByteFormatter.string(fromByteCount: pState.reclaimableBytes)) on disk • \(pState.scannedCount.formatted()) files")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("\(ByteFormatter.string(fromByteCount: pState.reclaimableBytes)) local / \(ByteFormatter.string(fromByteCount: pState.totalCloudBytes))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
                 } else {
                     Text("Click to scan")
                         .font(.caption2)
@@ -120,7 +141,7 @@ struct SidebarView: View {
                 }) {
                     Image(systemName: pState.isPaused ? "play.circle.fill" : "pause.circle.fill")
                         .font(.system(size: 14))
-                        .foregroundColor(pState.isPaused ? .green : .orange)
+                        .foregroundColor(pState.isPaused ? .teal : .orange)
                 }
                 .buttonStyle(.plain)
                 .help(pState.isPaused ? "Resume Scan" : "Pause Scan")
@@ -132,15 +153,16 @@ struct SidebarView: View {
             } else if pState.reclaimableBytes > 0 {
                 Text(ByteFormatter.string(fromByteCount: pState.reclaimableBytes))
                     .font(.caption2)
-                    .fontWeight(.semibold)
+                    .fontWeight(.medium)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                    .foregroundColor(.accentColor)
+                    .background(Capsule().fill(Color.secondary.opacity(0.14)))
+                    .foregroundColor(.secondary)
+                    .help(isLocal ? "Disk space used by this folder" : "Local disk space that can be evicted")
             } else if pState.hasCompletedScan {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
-                    .foregroundColor(.green)
+                    .foregroundColor(.teal.opacity(0.8))
             }
 
             if provider.type == .custom {
@@ -149,10 +171,10 @@ struct SidebarView: View {
                 }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
-                        .foregroundColor(.secondary.opacity(0.75))
+                        .foregroundColor(.secondary.opacity(0.65))
                 }
                 .buttonStyle(.plain)
-                .help("Remove Custom Folder from List")
+                .help("Remove folder from sidebar list")
             }
         }
         .tag(provider.id)
@@ -203,18 +225,21 @@ struct SidebarView: View {
         }
     }
 
-    private func providerColor(_ type: ProviderType) -> Color {
-        switch type {
+    private func providerColor(_ provider: CloudProvider) -> Color {
+        if provider.isLocalOnly {
+            return .secondary
+        }
+        switch provider.type {
         case .iCloud:
-            return .blue
+            return .blue.opacity(0.8)
         case .googleDrive:
-            return .red
+            return .teal.opacity(0.85)
         case .oneDrive:
-            return .teal
+            return .cyan.opacity(0.8)
         case .dropbox:
-            return .indigo
+            return .indigo.opacity(0.8)
         case .custom:
-            return .orange
+            return .secondary
         }
     }
 
@@ -226,7 +251,18 @@ struct SidebarView: View {
         panel.prompt = "Choose Folder"
         panel.message = "Select any folder on your Mac, an external local drive, or a cloud sync directory."
 
+        // Accessory checkbox inside NSOpenPanel to exclude cloud mounts when adding a local folder
+        let toggle = NSButton(
+            checkboxWithTitle: "Exclude cloud storage mounts (iCloud Drive, Google Drive, OneDrive, Dropbox) when scanning local folders",
+            target: nil,
+            action: nil
+        )
+        toggle.state = viewModel.excludeCloudFilesInLocalScans ? .on : .off
+        panel.accessoryView = toggle
+        panel.isAccessoryViewDisclosed = true
+
         if panel.runModal() == .OK, let url = panel.url {
+            viewModel.excludeCloudFilesInLocalScans = (toggle.state == .on)
             viewModel.addCustomFolder(url: url)
         }
     }

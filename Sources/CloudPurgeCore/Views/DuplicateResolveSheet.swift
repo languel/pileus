@@ -23,40 +23,38 @@ struct DuplicateResolveSheet: View {
     var body: some View {
         VStack(spacing: 14) {
             // Header
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 Image(systemName: viewModel.selectedResolutionStrategy.icon)
-                    .font(.system(size: 34))
-                    .foregroundColor(viewModel.selectedResolutionStrategy == .trashDuplicates ? .red : .purple)
+                    .font(.system(size: 30))
+                    .foregroundColor(viewModel.selectedResolutionStrategy == .trashDuplicates ? .red : .teal)
 
                 Text("Resolve Duplicate Files")
-                    .font(.title2)
+                    .font(.title3)
                     .fontWeight(.bold)
 
-                Text("Keep your chosen Primary file in each group and replace \(totalDuplicatesToReplace.formatted()) duplicate \(totalDuplicatesToReplace == 1 ? "copy" : "copies") across \(viewModel.pendingDuplicateGroups.count) \(viewModel.pendingDuplicateGroups.count == 1 ? "group" : "groups").")
-                    .font(.callout)
+                Text("Keep 1 Primary file per group and replace \(totalDuplicatesToReplace.formatted()) duplicate \(totalDuplicatesToReplace == 1 ? "copy" : "copies") across \(viewModel.pendingDuplicateGroups.count) \(viewModel.pendingDuplicateGroups.count == 1 ? "group" : "groups").")
+                    .font(.subheadline)
                     .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 520)
             }
 
             // Primary Relocation Option ("Move Primary to a new folder of choice and link everything from there")
             VStack(alignment: .leading, spacing: 8) {
-                Toggle(isOn: $viewModel.relocatePrimaryToCustomFolder) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Move Primary file(s) to a canonical folder and link all locations to it")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                        Text("Moves the Primary copy into your chosen folder and places links at both the Primary's original path and all duplicate paths.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
+                HStack(spacing: 6) {
+                    Toggle("Move Primary file(s) to a canonical folder and link all locations to it", isOn: $viewModel.relocatePrimaryToCustomFolder)
+                        .toggleStyle(.checkbox)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    Image(systemName: "info.circle")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .help("Moves the Primary copy into your chosen folder and places links at both the Primary's original path and all duplicate paths.")
                 }
-                .toggleStyle(.checkbox)
 
                 if viewModel.relocatePrimaryToCustomFolder {
                     HStack(spacing: 8) {
-                        Image(systemName: "folder.fill.badge.gearshape")
-                            .foregroundColor(.purple)
+                        Image(systemName: "folder.fill")
+                            .foregroundColor(.teal)
 
                         if let destURL = viewModel.relocatedPrimaryDirectoryURL {
                             Text(destURL.path)
@@ -66,7 +64,7 @@ struct DuplicateResolveSheet: View {
                                 .truncationMode(.middle)
                                 .help(destURL.path)
                         } else {
-                            Text("No destination folder selected...")
+                            Text("Select a destination folder...")
                                 .font(.caption)
                                 .foregroundColor(.orange)
                         }
@@ -83,7 +81,7 @@ struct DuplicateResolveSheet: View {
                     .padding(8)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.purple.opacity(0.08))
+                            .fill(Color.secondary.opacity(0.08))
                     )
                 }
             }
@@ -100,7 +98,7 @@ struct DuplicateResolveSheet: View {
 
             // Strategy Picker
             VStack(alignment: .leading, spacing: 6) {
-                Text("Link / Resolution Method:")
+                Text("Resolution Method:")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -110,40 +108,39 @@ struct DuplicateResolveSheet: View {
                     Button(action: {
                         viewModel.selectedResolutionStrategy = strategy
                     }) {
-                        HStack(alignment: .top, spacing: 10) {
+                        HStack(alignment: .center, spacing: 10) {
                             Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                                .foregroundColor(isSelected ? .purple : .secondary)
-                                .padding(.top, 2)
+                                .foregroundColor(isSelected ? .teal : .secondary)
 
                             Image(systemName: strategy.icon)
-                                .foregroundColor(strategy == .trashDuplicates ? .red : .purple)
+                                .foregroundColor(strategy == .trashDuplicates ? .red : .secondary)
                                 .frame(width: 18)
-                                .padding(.top, 2)
 
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(strategy.rawValue)
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.primary)
+                            Text(strategy.rawValue)
+                                .font(.subheadline)
+                                .fontWeight(isSelected ? .semibold : .regular)
+                                .foregroundColor(.primary)
 
-                                Text(strategy.summaryDescription)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
                             Spacer()
+
+                            Image(systemName: "info.circle")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .help(strategy.summaryDescription)
                         }
-                        .padding(8)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(isSelected ? Color.purple.opacity(0.10) : Color(nsColor: .controlBackgroundColor))
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(isSelected ? Color.teal.opacity(0.10) : Color(nsColor: .controlBackgroundColor))
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(isSelected ? Color.purple.opacity(0.55) : Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
+                                    RoundedRectangle(cornerRadius: 7)
+                                        .stroke(isSelected ? Color.teal.opacity(0.55) : Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
                                 )
                         )
                     }
                     .buttonStyle(.plain)
+                    .help(strategy.summaryDescription)
                 }
 
                 if viewModel.selectedResolutionStrategy == .symlink {
@@ -151,6 +148,7 @@ struct DuplicateResolveSheet: View {
                         .toggleStyle(.checkbox)
                         .font(.caption)
                         .padding(.top, 2)
+                        .help("Relative symlinks remain valid if the parent folder is moved intact.")
                 }
             }
             .frame(maxWidth: 560)
@@ -195,28 +193,28 @@ struct DuplicateResolveSheet: View {
             // Metrics Summary Box
             HStack(spacing: 22) {
                 VStack(spacing: 2) {
-                    Text("Local Mac Freed")
+                    Text("Disk Space Saved")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(ByteFormatter.string(fromByteCount: totalLocalBytesFreed))
                         .font(.title3)
                         .fontWeight(.bold)
-                        .foregroundColor(.green)
+                        .foregroundColor(.teal)
                 }
 
-                Divider().frame(height: 30)
+                Divider().frame(height: 28)
 
                 VStack(spacing: 2) {
-                    Text("Cloud / Logical Saved")
+                    Text("Logical Size Saved")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(ByteFormatter.string(fromByteCount: totalCloudBytesFreed))
                         .font(.title3)
                         .fontWeight(.bold)
-                        .foregroundColor(.blue)
+                        .foregroundColor(.primary)
                 }
 
-                Divider().frame(height: 30)
+                Divider().frame(height: 28)
 
                 VStack(spacing: 2) {
                     Text("Duplicates Replaced")
@@ -230,7 +228,7 @@ struct DuplicateResolveSheet: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
             .background(
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(Color(nsColor: .controlBackgroundColor))
             )
 
@@ -248,11 +246,11 @@ struct DuplicateResolveSheet: View {
                                     if viewModel.relocatePrimaryToCustomFolder, let destDir = viewModel.relocatedPrimaryDirectoryURL {
                                         HStack(spacing: 5) {
                                             Image(systemName: "folder.fill.badge.plus")
-                                                .foregroundColor(.green)
+                                                .foregroundColor(.teal)
                                                 .font(.caption2)
                                             Text("NEW PRIMARY:")
                                                 .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(.green)
+                                                .foregroundColor(.teal)
                                             Text(destDir.appendingPathComponent(primary.name).path)
                                                 .font(.caption)
                                                 .fontWeight(.medium)
@@ -262,11 +260,11 @@ struct DuplicateResolveSheet: View {
 
                                         HStack(spacing: 5) {
                                             Image(systemName: "arrow.turn.down.right")
-                                                .foregroundColor(.purple)
+                                                .foregroundColor(.secondary)
                                                 .font(.caption2)
                                             Text("LINK AT OLD PRIMARY:")
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(.purple)
+                                                .font(.system(size: 10, weight: .semibold))
+                                                .foregroundColor(.secondary)
                                             Text("[\(viewModel.providerName(for: primary.providerId))] \(primary.relativePath)")
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
@@ -276,11 +274,11 @@ struct DuplicateResolveSheet: View {
                                     } else {
                                         HStack(spacing: 5) {
                                             Image(systemName: "checkmark.circle.fill")
-                                                .foregroundColor(.green)
+                                                .foregroundColor(.teal)
                                                 .font(.caption2)
                                             Text("PRIMARY:")
                                                 .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(.green)
+                                                .foregroundColor(.teal)
                                             Text("[\(viewModel.providerName(for: primary.providerId))] \(primary.relativePath)")
                                                 .font(.caption)
                                                 .fontWeight(.medium)
@@ -291,11 +289,11 @@ struct DuplicateResolveSheet: View {
                                     ForEach(group.duplicateItems) { dup in
                                         HStack(spacing: 5) {
                                             Image(systemName: "arrow.turn.down.right")
-                                                .foregroundColor(.purple)
+                                                .foregroundColor(.secondary)
                                                 .font(.caption2)
                                             Text(viewModel.selectedResolutionStrategy.shortTitle.uppercased() + ":")
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(.purple)
+                                                .font(.system(size: 10, weight: .semibold))
+                                                .foregroundColor(.secondary)
                                             Text("[\(viewModel.providerName(for: dup.providerId))] \(dup.relativePath)")
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
@@ -340,7 +338,7 @@ struct DuplicateResolveSheet: View {
                     .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(viewModel.selectedResolutionStrategy == .trashDuplicates ? .red : .purple)
+                .tint(viewModel.selectedResolutionStrategy == .trashDuplicates ? .red : .teal)
                 .disabled(viewModel.relocatePrimaryToCustomFolder && viewModel.relocatedPrimaryDirectoryURL == nil)
                 .keyboardShortcut(.defaultAction)
             }
@@ -373,7 +371,7 @@ struct DuplicateResolveSheet: View {
 
     private func warningColor(_ severity: DuplicatePlatformWarning.Severity) -> Color {
         switch severity {
-        case .info: return .blue
+        case .info: return .teal
         case .caution: return .orange
         case .danger: return .red
         }

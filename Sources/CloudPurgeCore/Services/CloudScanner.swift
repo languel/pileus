@@ -95,9 +95,14 @@ public final class CloudScanner: Sendable {
     public func scan(
         rootURL: URL,
         providerId: String,
+        excludeCloudStoragePaths: Bool = false,
         onProgress: (@Sendable (Int, String) -> Void)? = nil
     ) async throws -> ScanResult {
-        return try await scanWithProgress(rootURL: rootURL, providerId: providerId) { progress in
+        return try await scanWithProgress(
+            rootURL: rootURL,
+            providerId: providerId,
+            excludeCloudStoragePaths: excludeCloudStoragePaths
+        ) { progress in
             onProgress?(progress.scannedFiles, progress.currentPath)
         }
     }
@@ -152,6 +157,7 @@ public final class CloudScanner: Sendable {
     public func scanWithProgress(
         rootURL: URL,
         providerId: String,
+        excludeCloudStoragePaths: Bool = false,
         control: ScanSessionControl? = nil,
         onProgress: (@Sendable (ScanProgress) -> Void)? = nil
     ) async throws -> ScanResult {
@@ -219,6 +225,8 @@ public final class CloudScanner: Sendable {
 
                 if info == FTS_D {
                     let level = Int(ent.pointee.fts_level)
+                    let fullPath = String(cString: pathPtr)
+
                     if level > 0 {
                         // Skip internal cloud/system metadata folders
                         if name == ".Trash" ||
@@ -230,9 +238,23 @@ public final class CloudScanner: Sendable {
                             fts_set(fts, ent, FTS_SKIP)
                             continue
                         }
-                    }
 
-                    let fullPath = String(cString: pathPtr)
+                        // When scanning a local folder/drive with `excludeCloudStoragePaths` enabled,
+                        // skip cloud-mounted directories (iCloud Drive, Google Drive, OneDrive, Dropbox, Box)
+                        if excludeCloudStoragePaths {
+                            if name == "CloudStorage" ||
+                               name == "Mobile Documents" ||
+                               name == "iCloud Drive (Archive)" ||
+                               name == "Dropbox" ||
+                               name.hasPrefix("OneDrive") ||
+                               name.hasPrefix("Google Drive") ||
+                               fullPath.contains("/Library/Mobile Documents") ||
+                               fullPath.contains("/Library/CloudStorage") {
+                                fts_set(fts, ent, FTS_SKIP)
+                                continue
+                            }
+                        }
+                    }
                     let relativePath: String
                     if fullPath.utf8.count > rootPrefixLen {
                         let startIdx = fullPath.utf8.index(fullPath.utf8.startIndex, offsetBy: rootPrefixLen)
@@ -322,6 +344,9 @@ public final class CloudScanner: Sendable {
                     let flags = st.pointee.st_flags
                     let blocks = Int64(st.pointee.st_blocks)
                     let isDataless = (flags & DatalessDetector.sfDatalessFlag) != 0 || (blocks == 0 && logicalFileSize > 0)
+                    if excludeCloudStoragePaths && isDataless {
+                        continue
+                    }
                     let allocatedSize = isDataless ? 0 : max(0, blocks * 512)
                     let syncStatus: SyncStatus = isDataless ? .cloudOnly : .downloaded
 

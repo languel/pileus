@@ -97,6 +97,15 @@ public final class AppViewModel: ObservableObject {
     @Published public var duplicateMinSizeBytes: Int64 = 10 * 1024 // Default >= 10 KB
     @Published public var duplicateIncludeCloudOnly: Bool = true
     @Published public var selectedDuplicateGroupIds = Set<String>()
+    @Published public var excludeCloudFilesInLocalScans: Bool = true {
+        didSet {
+            if oldValue != excludeCloudFilesInLocalScans,
+               let selected = selectedProvider,
+               selected.isLocalOnly {
+                startScan(for: selected, forceRestart: true)
+            }
+        }
+    }
 
     // Duplicate Resolution Sheet State
     @Published public var showDuplicateResolveSheet: Bool = false
@@ -180,6 +189,14 @@ public final class AppViewModel: ObservableObject {
 
     public var totalDownloadedCount: Int {
         activeState.downloadedCount
+    }
+
+    public var isActiveProviderLocalOnly: Bool {
+        selectedProvider?.isLocalOnly ?? false
+    }
+
+    public func isProviderLocalOnly(_ providerId: String) -> Bool {
+        providers.first(where: { $0.id == providerId })?.isLocalOnly ?? false
     }
 
     public var reclaimablePercentage: Double {
@@ -342,10 +359,18 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
+    private func formatScanMetrics(files: Int, bytes: Int64, isLocalOnly: Bool) -> String {
+        let sizeStr = ByteFormatter.string(fromByteCount: bytes)
+        return isLocalOnly
+            ? "\(files.formatted()) files (\(sizeStr) on disk)"
+            : "\(files.formatted()) files (\(sizeStr) reclaimable)"
+    }
+
     /// Starts or restarts a scan for a specific provider without cancelling scans of other providers.
     public func startScan(for providerOverride: CloudProvider? = nil, forceRestart: Bool = true) {
         guard let target = providerOverride ?? selectedProvider else { return }
         let providerId = target.id
+        let isLocalOnly = target.isLocalOnly
 
         if !forceRestart {
             if let existing = providerStates[providerId], existing.isScanning || existing.hasCompletedScan || !existing.items.isEmpty {
@@ -372,12 +397,15 @@ public final class AppViewModel: ObservableObject {
             scheduleFilterAndSort(debounceSearch: false)
         }
 
+        let shouldExcludeCloud = isLocalOnly && excludeCloudFilesInLocalScans
+
         scanTasks[providerId] = Task { [weak self] in
             guard let self = self else { return }
             do {
                 let result = try await CloudScanner.shared.scanWithProgress(
                     rootURL: target.rootURL,
                     providerId: providerId,
+                    excludeCloudStoragePaths: shouldExcludeCloud,
                     control: control
                 ) { [weak self] progress in
                     Task { @MainActor [weak self] in
@@ -399,10 +427,11 @@ public final class AppViewModel: ObservableObject {
                             st.allFolders = allFolderSnap
                         }
 
+                        let summaryStr = self.formatScanMetrics(files: progress.scannedFiles, bytes: progress.reclaimableBytes, isLocalOnly: isLocalOnly)
                         if st.isPaused {
-                            st.scanProgressText = "Scan paused • \(progress.scannedFiles.formatted()) files (\(ByteFormatter.string(fromByteCount: progress.reclaimableBytes)) reclaimable)"
+                            st.scanProgressText = "Scan paused • \(summaryStr)"
                         } else if st.isScanning {
-                            st.scanProgressText = "Scanning \(target.name): \(progress.scannedFiles.formatted()) files (\(ByteFormatter.string(fromByteCount: progress.reclaimableBytes)) reclaimable) — \(progress.currentPath)"
+                            st.scanProgressText = "Scanning \(target.name): \(summaryStr) — \(progress.currentPath)"
                         }
 
                         self.providerStates[providerId] = st
@@ -440,10 +469,11 @@ public final class AppViewModel: ObservableObject {
                 completedState.downloadedCount = result.downloadedCount
                 completedState.lastScannedDate = Date()
 
+                let finalSummaryStr = self.formatScanMetrics(files: result.totalFilesCount, bytes: result.reclaimableBytes, isLocalOnly: isLocalOnly)
                 if wasStopped {
-                    completedState.scanProgressText = "Scan stopped • \(result.totalFilesCount.formatted()) files kept (\(ByteFormatter.string(fromByteCount: result.reclaimableBytes)) reclaimable)"
+                    completedState.scanProgressText = "Scan stopped • \(finalSummaryStr)"
                 } else {
-                    completedState.scanProgressText = "Scan complete • \(result.totalFilesCount.formatted()) files (\(ByteFormatter.string(fromByteCount: result.reclaimableBytes)) reclaimable)"
+                    completedState.scanProgressText = "Scan complete • \(finalSummaryStr)"
                 }
 
                 self.providerStates[providerId] = completedState
@@ -481,7 +511,7 @@ public final class AppViewModel: ObservableObject {
         guard var st = providerStates[targetId], st.isScanning, !st.isPaused else { return }
         scanControls[targetId]?.pause()
         st.isPaused = true
-        st.scanProgressText = "Scan paused • \(st.scannedCount.formatted()) files (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
+        st.scanProgressText = "Scan paused • \(formatScanMetrics(files: st.scannedCount, bytes: st.reclaimableBytes, isLocalOnly: isProviderLocalOnly(targetId)))"
         providerStates[targetId] = st
 
         if selectedProvider?.id == targetId {
@@ -517,7 +547,7 @@ public final class AppViewModel: ObservableObject {
         if var st = providerStates[targetId] {
             st.isScanning = false
             st.isPaused = false
-            st.scanProgressText = "Scan stopped • \(st.scannedCount.formatted()) files kept (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
+            st.scanProgressText = "Scan stopped • \(formatScanMetrics(files: st.scannedCount, bytes: st.reclaimableBytes, isLocalOnly: isProviderLocalOnly(targetId)))"
             providerStates[targetId] = st
         }
         if selectedProvider?.id == targetId {
@@ -613,6 +643,10 @@ public final class AppViewModel: ObservableObject {
     // MARK: - Eviction & Permanent Cloud Deletion Actions
 
     public func evictSingle(item: CloudItem) {
+        guard !isProviderLocalOnly(item.providerId) else {
+            deleteSingle(item: item)
+            return
+        }
         guard item.isReclaimable else {
             errorMessage = "File is not eligible for eviction or is already cloud-only."
             showErrorAlert = true
@@ -623,20 +657,27 @@ public final class AppViewModel: ObservableObject {
         pendingEvictionItems = [item]
         pendingEvictionFolderURLs = []
         pendingEvictionTitle = "Evict Local Copy: \(item.name)"
-        pendingEvictionDescription = "This will unload '\(item.name)' from local storage and make it cloud-only, freeing \(ByteFormatter.string(fromByteCount: item.allocatedSize)) on your Mac. The file remains safely stored in the cloud and can be reopened anytime."
+        pendingEvictionDescription = "Unloads '\(item.name)' from local storage (\(ByteFormatter.string(fromByteCount: item.allocatedSize))) while preserving it in the cloud."
         showConfirmationSheet = true
     }
 
     public func deleteSingle(item: CloudItem) {
+        let isLocal = isProviderLocalOnly(item.providerId)
         pendingActionMode = .deleteEverywhere
         pendingEvictionItems = [item]
         pendingEvictionFolderURLs = []
-        pendingEvictionTitle = "Delete from Mac & Cloud: \(item.name)"
-        pendingEvictionDescription = "WARNING: This will permanently delete '\(item.name)' (\(ByteFormatter.string(fromByteCount: item.fileSize))) from your Mac AND from your cloud drive across all synced devices."
+        pendingEvictionTitle = isLocal ? "Delete File: \(item.name)" : "Delete from Mac & Cloud: \(item.name)"
+        pendingEvictionDescription = isLocal
+            ? "Permanently deletes '\(item.name)' (\(ByteFormatter.string(fromByteCount: item.allocatedSize))) from your disk."
+            : "Permanently deletes '\(item.name)' (\(ByteFormatter.string(fromByteCount: item.fileSize))) from your Mac and cloud storage."
         showConfirmationSheet = true
     }
 
     public func promptEvictSelection() {
+        if isActiveProviderLocalOnly {
+            promptDeleteSelection()
+            return
+        }
         let items = allItems.filter { selectedItemIds.contains($0.id) && $0.isReclaimable }
         guard !items.isEmpty else {
             errorMessage = "No reclaimable downloaded files selected."
@@ -649,7 +690,7 @@ public final class AppViewModel: ObservableObject {
         pendingEvictionItems = items
         pendingEvictionFolderURLs = []
         pendingEvictionTitle = "Evict Local Copies (\(items.count) Files)"
-        pendingEvictionDescription = "You are about to unload \(items.count) selected files and reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) on your Mac. These files will be converted to cloud placeholders and remain 100% preserved in the cloud."
+        pendingEvictionDescription = "Unloads \(items.count) selected files (\(ByteFormatter.string(fromByteCount: totalFreed))) on your Mac while preserving them in the cloud."
         showConfirmationSheet = true
     }
 
@@ -661,16 +702,38 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        let totalCloud = items.reduce(0) { $0 + $1.fileSize }
+        let isLocal = isActiveProviderLocalOnly
+        let totalSize = items.reduce(0) { $0 + (isLocal ? $1.allocatedSize : $1.fileSize) }
         pendingActionMode = .deleteEverywhere
         pendingEvictionItems = items
         pendingEvictionFolderURLs = []
-        pendingEvictionTitle = "Delete \(items.count) Files from Mac & Cloud"
-        pendingEvictionDescription = "WARNING: You are about to permanently delete \(items.count) files (\(ByteFormatter.string(fromByteCount: totalCloud)) cloud storage) from your Mac AND your cloud drive across all devices."
+        pendingEvictionTitle = isLocal
+            ? "Delete \(items.count) Selected Files"
+            : "Delete \(items.count) Files from Mac & Cloud"
+        pendingEvictionDescription = isLocal
+            ? "Permanently deletes \(items.count) files (\(ByteFormatter.string(fromByteCount: totalSize))) from your disk."
+            : "Permanently deletes \(items.count) files (\(ByteFormatter.string(fromByteCount: totalSize))) from your Mac and cloud storage."
         showConfirmationSheet = true
     }
 
     public func promptEvictAllFiltered() {
+        if isActiveProviderLocalOnly {
+            let items = filteredAndSortedItems
+            guard !items.isEmpty else {
+                errorMessage = "No files match current filters."
+                showErrorAlert = true
+                return
+            }
+            let totalSize = items.reduce(0) { $0 + $1.allocatedSize }
+            pendingActionMode = .deleteEverywhere
+            pendingEvictionItems = items
+            pendingEvictionFolderURLs = []
+            pendingEvictionTitle = "Delete All \(items.count) Filtered Files"
+            pendingEvictionDescription = "Permanently deletes \(items.count) matching files (\(ByteFormatter.string(fromByteCount: totalSize))) from your disk."
+            showConfirmationSheet = true
+            return
+        }
+
         let items = filteredAndSortedItems.filter { $0.isReclaimable }
         guard !items.isEmpty else {
             errorMessage = "No downloaded files match current filters."
@@ -683,11 +746,15 @@ public final class AppViewModel: ObservableObject {
         pendingEvictionItems = items
         pendingEvictionFolderURLs = []
         pendingEvictionTitle = "Evict All Matching Local Copies"
-        pendingEvictionDescription = "Unload local copies and reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) across all \(items.count) files matching your active filters. Files remain safely preserved in the cloud."
+        pendingEvictionDescription = "Unloads local copies across \(items.count) matching files (\(ByteFormatter.string(fromByteCount: totalFreed))) while preserving them in the cloud."
         showConfirmationSheet = true
     }
 
     public func promptEvictFolder(node: CloudFolderNode) {
+        if isProviderLocalOnly(node.providerId) {
+            promptDeleteFolder(node: node)
+            return
+        }
         let folderPath = node.path
         let folderPrefix = folderPath.hasSuffix("/") ? folderPath : (folderPath + "/")
         let itemsInFolder = allItems.filter {
@@ -705,7 +772,7 @@ public final class AppViewModel: ObservableObject {
         pendingEvictionItems = itemsInFolder
         pendingEvictionFolderURLs = [node.url]
         pendingEvictionTitle = "Evict Local Copies in '\(node.name)'"
-        pendingEvictionDescription = "Recursively unload \(itemsInFolder.count.formatted()) downloaded files in '\(node.name)' and its subfolders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space while keeping them in the cloud."
+        pendingEvictionDescription = "Recursively unloads \(itemsInFolder.count.formatted()) downloaded files in '\(node.name)' (\(ByteFormatter.string(fromByteCount: totalFreed))) while keeping them in the cloud."
         showConfirmationSheet = true
     }
 
@@ -722,18 +789,27 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
+        let isLocal = isProviderLocalOnly(node.providerId)
         let totalLocal = itemsInFolder.reduce(0) { $0 + $1.allocatedSize }
         let totalCloud = itemsInFolder.reduce(0) { $0 + $1.fileSize }
         pendingActionMode = .deleteEverywhere
         pendingEvictionItems = itemsInFolder
         pendingEvictionFolderURLs = [node.url]
-        pendingEvictionTitle = "Delete '\(node.name)' from Mac & Cloud"
-        pendingEvictionDescription = "WARNING: This will permanently delete the entire '\(node.name)' folder (\(itemsInFolder.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal)) local / \(ByteFormatter.string(fromByteCount: totalCloud)) cloud) from your Mac AND your cloud storage."
+        pendingEvictionTitle = isLocal
+            ? "Delete Folder '\(node.name)'"
+            : "Delete '\(node.name)' from Mac & Cloud"
+        pendingEvictionDescription = isLocal
+            ? "Permanently deletes '\(node.name)' (\(itemsInFolder.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal))) from your disk."
+            : "Permanently deletes '\(node.name)' (\(itemsInFolder.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal)) local / \(ByteFormatter.string(fromByteCount: totalCloud)) cloud) from your Mac and cloud storage."
         showConfirmationSheet = true
     }
 
     /// Recursively evicts all downloaded files across a list of folders (e.g., all matching `node_modules` folders).
     public func promptEvictMultipleFolders(nodes: [CloudFolderNode], label: String) {
+        if isActiveProviderLocalOnly {
+            promptDeleteMultipleFolders(nodes: nodes, label: label)
+            return
+        }
         let reclaimableFolders = nodes.filter { $0.reclaimableBytes > 0 }
         guard !reclaimableFolders.isEmpty else {
             errorMessage = "No downloaded files to evict in the matching folders."
@@ -766,7 +842,7 @@ public final class AppViewModel: ObservableObject {
         pendingEvictionItems = matchedItems
         pendingEvictionFolderURLs = reclaimableFolders.map { $0.url }
         pendingEvictionTitle = "Evict Local Copies in \(reclaimableFolders.count) Folders (\(label))"
-        pendingEvictionDescription = "Recursively unload \(matchedItems.count.formatted()) downloaded files across \(reclaimableFolders.count) matching folders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space while keeping all files in the cloud."
+        pendingEvictionDescription = "Recursively unloads \(matchedItems.count.formatted()) downloaded files across \(reclaimableFolders.count) folders (\(ByteFormatter.string(fromByteCount: totalFreed))) while keeping them in the cloud."
         showConfirmationSheet = true
     }
 
@@ -798,13 +874,18 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
+        let isLocal = isActiveProviderLocalOnly
         let totalLocal = matchedItems.reduce(0) { $0 + $1.allocatedSize }
         let totalCloud = matchedItems.reduce(0) { $0 + $1.fileSize }
         pendingActionMode = .deleteEverywhere
         pendingEvictionItems = matchedItems
         pendingEvictionFolderURLs = nodes.map { $0.url }
-        pendingEvictionTitle = "Delete All \(nodes.count) '\(label)' Folders from Mac & Cloud"
-        pendingEvictionDescription = "WARNING: This will permanently delete all \(nodes.count) '\(label)' folders (\(matchedItems.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal)) local / \(ByteFormatter.string(fromByteCount: totalCloud)) cloud) from your Mac AND from your cloud drive."
+        pendingEvictionTitle = isLocal
+            ? "Delete All \(nodes.count) '\(label)' Folders"
+            : "Delete All \(nodes.count) '\(label)' Folders from Mac & Cloud"
+        pendingEvictionDescription = isLocal
+            ? "Permanently deletes \(nodes.count) '\(label)' folders (\(matchedItems.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal))) from your disk."
+            : "Permanently deletes \(nodes.count) '\(label)' folders (\(matchedItems.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal)) local / \(ByteFormatter.string(fromByteCount: totalCloud)) cloud) from your Mac and cloud storage."
         showConfirmationSheet = true
     }
 
@@ -841,7 +922,7 @@ public final class AppViewModel: ObservableObject {
         evictionProgressCurrent = 0
         evictionProgressTotal = itemsToProcess.count
         evictionProgressText = mode == .deleteEverywhere
-            ? "Deleting from Mac & Cloud..."
+            ? "Deleting files..."
             : "Evicting local copies..."
 
         currentEvictTask = Task { [weak self] in
@@ -857,7 +938,7 @@ public final class AppViewModel: ObservableObject {
                         guard let self = self else { return }
                         self.evictionProgressCurrent = cur
                         self.evictionProgressTotal = total
-                        self.evictionProgressText = "Deleted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) local freed)..."
+                        self.evictionProgressText = "Deleted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)..."
                     }
                 }
             } else {
@@ -871,7 +952,7 @@ public final class AppViewModel: ObservableObject {
                         self.evictionProgressCurrent = cur
                         self.evictionProgressTotal = total
                         if self.isEvictionPaused {
-                            self.evictionProgressText = "Paused at \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed so far)"
+                            self.evictionProgressText = "Paused at \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)"
                         } else {
                             self.evictionProgressText = "Evicted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)..."
                         }
@@ -938,7 +1019,7 @@ public final class AppViewModel: ObservableObject {
         st.totalCloudBytes = max(0, st.totalCloudBytes - totalCloudDeleted)
         st.reclaimableBytes = max(0, st.reclaimableBytes - totalReclaimFreed)
         st.downloadedCount = max(0, st.downloadedCount - totalDownloadedDeleted)
-        st.scanProgressText = "Scan complete • \(st.items.count.formatted()) files (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
+        st.scanProgressText = "Scan complete • \(formatScanMetrics(files: st.items.count, bytes: st.reclaimableBytes, isLocalOnly: isProviderLocalOnly(providerId)))"
 
         let deletedFolderSet = Set(deletedFolderPaths)
         let deletedFolderPrefixes = deletedFolderPaths.map { $0.hasSuffix("/") ? $0 : ($0 + "/") }
@@ -1047,10 +1128,11 @@ public final class AppViewModel: ObservableObject {
 
         st.reclaimableBytes = max(0, st.reclaimableBytes - totalFreedBytes)
         st.downloadedCount = max(0, st.downloadedCount - totalFreedCount)
+        let summaryStr = formatScanMetrics(files: st.items.count, bytes: st.reclaimableBytes, isLocalOnly: isProviderLocalOnly(providerId))
         if st.isPaused {
-            st.scanProgressText = "Scan paused • \(st.items.count.formatted()) files (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
+            st.scanProgressText = "Scan paused • \(summaryStr)"
         } else if !st.isScanning {
-            st.scanProgressText = "Scan complete • \(st.items.count.formatted()) files (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
+            st.scanProgressText = "Scan complete • \(summaryStr)"
         }
 
         // Recursively update folderNodes and flat allFolders
