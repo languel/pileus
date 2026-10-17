@@ -199,6 +199,11 @@ public final class AppViewModel: ObservableObject {
         providers.first(where: { $0.id == providerId })?.isLocalOnly ?? false
     }
 
+    public var isPendingItemsLocalOnly: Bool {
+        guard !pendingEvictionItems.isEmpty else { return isActiveProviderLocalOnly }
+        return pendingEvictionItems.allSatisfy { isProviderLocalOnly($0.providerId) }
+    }
+
     public var reclaimablePercentage: Double {
         let total = totalCloudBytes
         guard total > 0 else { return 0 }
@@ -968,14 +973,41 @@ public final class AppViewModel: ObservableObject {
             self.selectedItemIds.subtract(report.evictedItemIds)
 
             // Update state in memory immediately without restarting a slow full scan!
-            if let pid = targetProviderId, !report.evictedItemIds.isEmpty {
+            if !report.evictedItemIds.isEmpty {
+                let affectedProviderIds = Set(itemsToProcess.map { $0.providerId })
                 if mode == .deleteEverywhere {
-                    self.applyDeletionInMemory(
-                        providerId: pid,
-                        deletedIds: report.evictedItemIds,
-                        deletedFolderPaths: report.deletedFolderPaths
-                    )
-                } else {
+                    for pid in affectedProviderIds {
+                        self.applyDeletionInMemory(
+                            providerId: pid,
+                            deletedIds: report.evictedItemIds,
+                            deletedFolderPaths: report.deletedFolderPaths
+                        )
+                    }
+                    // Also remove deleted instances from active duplicate groups
+                    if !self.duplicateGroups.isEmpty {
+                        var updatedGroups: [DuplicateGroup] = []
+                        for var group in self.duplicateGroups {
+                            group.items.removeAll { report.evictedItemIds.contains($0.id) }
+                            if !group.items.contains(where: { $0.id == group.primaryItemId }),
+                               let newPrimary = group.items.first {
+                                group.primaryItemId = newPrimary.id
+                            }
+                            if group.items.count > 1 {
+                                updatedGroups.append(group)
+                            } else {
+                                self.selectedDuplicateGroupIds.remove(group.id)
+                            }
+                        }
+                        self.duplicateGroups = updatedGroups
+                        let totalRedundant = updatedGroups.reduce(0) { $0 + $1.redundantLogicalBytes }
+                        let totalLocalReclaim = updatedGroups.reduce(0) { $0 + $1.reclaimableLocalBytes }
+                        if updatedGroups.isEmpty {
+                            self.duplicateScanProgressText = "All duplicate groups resolved."
+                        } else {
+                            self.duplicateScanProgressText = "Found \(updatedGroups.count.formatted()) duplicate groups • \(ByteFormatter.string(fromByteCount: totalLocalReclaim)) local (\(ByteFormatter.string(fromByteCount: totalRedundant)) total) redundant"
+                        }
+                    }
+                } else if let pid = targetProviderId {
                     self.applyEvictionInMemory(providerId: pid, evictedIds: report.evictedItemIds)
                 }
             }
@@ -1312,6 +1344,67 @@ public final class AppViewModel: ObservableObject {
         pendingDuplicateGroups = [group]
         selectedResolutionStrategy = recommendedStrategy(for: [group])
         showDuplicateResolveSheet = true
+    }
+
+    /// Prompts to delete a specific duplicate instance from a DuplicateGroup with an explicit warning.
+    public func promptDeleteDuplicateInstance(item: CloudItem, in group: DuplicateGroup) {
+        let remaining = group.items.filter { $0.id != item.id }
+        let isLocal = isProviderLocalOnly(item.providerId)
+        let targetProvName = providerName(for: item.providerId)
+
+        let keptSummary: String
+        if let kept = group.primaryItem, kept.id != item.id {
+            keptSummary = "Preserves Primary copy at [\(providerName(for: kept.providerId))] \(kept.relativePath)."
+        } else if let firstRemaining = remaining.first {
+            keptSummary = "Preserves remaining copy at [\(providerName(for: firstRemaining.providerId))] \(firstRemaining.relativePath)."
+        } else {
+            keptSummary = ""
+        }
+
+        let unverifiedCaution = group.isVerifiedFullHash
+            ? ""
+            : " Note: This group includes cloud-only files matched by exact size and filename."
+
+        pendingActionMode = .deleteEverywhere
+        pendingEvictionItems = [item]
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = isLocal
+            ? "Delete Duplicate Instance '\(item.name)'"
+            : "Delete Duplicate '\(item.name)' from Mac & Cloud"
+        pendingEvictionDescription = isLocal
+            ? "Permanently deletes [\(targetProvName)] \(item.relativePath) (\(ByteFormatter.string(fromByteCount: item.fileSize))) from your disk. \(keptSummary)\(unverifiedCaution)"
+            : "Permanently deletes [\(targetProvName)] \(item.relativePath) (\(ByteFormatter.string(fromByteCount: item.fileSize))) from your Mac and cloud storage. \(keptSummary)\(unverifiedCaution)"
+        showConfirmationSheet = true
+    }
+
+    /// Prompts to delete all non-primary duplicate instances in a DuplicateGroup while keeping the Primary copy untouched.
+    public func promptDeleteGroupDuplicates(_ group: DuplicateGroup) {
+        let duplicates = group.duplicateItems
+        guard !duplicates.isEmpty else { return }
+
+        let allLocal = duplicates.allSatisfy { isProviderLocalOnly($0.providerId) }
+        let totalSize = duplicates.reduce(0) { $0 + $1.fileSize }
+        let keptSummary: String
+        if let primary = group.primaryItem {
+            keptSummary = "Preserves Primary copy at [\(providerName(for: primary.providerId))] \(primary.relativePath)."
+        } else {
+            keptSummary = ""
+        }
+
+        let unverifiedCaution = group.isVerifiedFullHash
+            ? ""
+            : " Note: This group includes cloud-only files matched by exact size and filename."
+
+        pendingActionMode = .deleteEverywhere
+        pendingEvictionItems = duplicates
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = allLocal
+            ? "Delete \(duplicates.count) Duplicate \(duplicates.count == 1 ? "Copy" : "Copies") of '\(group.sampleName)'"
+            : "Delete \(duplicates.count) Duplicate \(duplicates.count == 1 ? "Copy" : "Copies") from Mac & Cloud"
+        pendingEvictionDescription = allLocal
+            ? "Permanently deletes \(duplicates.count) duplicate \(duplicates.count == 1 ? "instance" : "instances") (\(ByteFormatter.string(fromByteCount: totalSize))) from your disk without creating links. \(keptSummary)\(unverifiedCaution)"
+            : "Permanently deletes \(duplicates.count) duplicate \(duplicates.count == 1 ? "instance" : "instances") (\(ByteFormatter.string(fromByteCount: totalSize))) from your Mac and cloud storage without creating links. \(keptSummary)\(unverifiedCaution)"
+        showConfirmationSheet = true
     }
 
     public func promptResolveSelectedDuplicateGroups() {

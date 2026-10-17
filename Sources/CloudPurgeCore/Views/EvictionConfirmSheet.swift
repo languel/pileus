@@ -16,7 +16,7 @@ struct EvictionConfirmSheet: View {
     }
 
     var body: some View {
-        let isLocalOnly = viewModel.isActiveProviderLocalOnly
+        let isLocalOnly = viewModel.isPendingItemsLocalOnly
 
         VStack(spacing: 16) {
             if !isLocalOnly {
@@ -162,14 +162,16 @@ struct EvictionConfirmSheet: View {
                             }
                         } else {
                             ForEach(viewModel.pendingEvictionItems.prefix(50)) { item in
-                                HStack {
+                                HStack(spacing: 6) {
                                     Image(systemName: item.kind.icon)
                                         .font(.caption)
                                         .foregroundColor(.secondary)
 
-                                    Text(item.name)
+                                    Text("[\(viewModel.providerName(for: item.providerId))] \(item.relativePath)")
                                         .font(.caption)
                                         .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help(item.path)
 
                                     Spacer()
 

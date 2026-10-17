@@ -293,12 +293,24 @@ struct DuplicateGroupCard: View {
                 Button(action: {
                     viewModel.promptResolveDuplicateGroup(group)
                 }) {
-                    Label("Resolve...", systemImage: "link")
+                    Label("Link / Resolve...", systemImage: "link")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Link or resolve duplicate copies in this group")
+                .help("Replace duplicate copies in this group with links, aliases, or APFS clones")
+
+                Button(action: {
+                    viewModel.promptDeleteGroupDuplicates(group)
+                }) {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .controlSize(.small)
+                .disabled(viewModel.isEvicting)
+                .help("Delete all \(group.duplicateItems.count) duplicate \(group.duplicateItems.count == 1 ? "copy" : "copies") in this group (keeps Primary copy)")
             }
 
             Divider()
@@ -309,6 +321,7 @@ struct DuplicateGroupCard: View {
                     let isPrimary = (item.id == group.primaryItem?.id)
                     let provName = viewModel.providerName(for: item.providerId)
                     let provType = viewModel.providerType(for: item.providerId)
+                    let isItemLocalOnly = viewModel.isProviderLocalOnly(item.providerId)
 
                     HStack(spacing: 8) {
                         Button(action: {
@@ -375,6 +388,22 @@ struct DuplicateGroupCard: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
+
+                        // Delete this specific instance button (with confirmation sheet & warning)
+                        Button(action: {
+                            viewModel.promptDeleteDuplicateInstance(item: item, in: group)
+                        }) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11))
+                                .foregroundColor(isPrimary ? .secondary.opacity(0.5) : .red.opacity(0.85))
+                                .frame(width: 22, height: 20)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.isEvicting)
+                        .help(isItemLocalOnly
+                            ? "Delete this duplicate instance (\(item.relativePath)) from disk..."
+                            : "Delete this duplicate instance (\(item.relativePath)) from Mac & Cloud...")
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -382,6 +411,29 @@ struct DuplicateGroupCard: View {
                         RoundedRectangle(cornerRadius: 5)
                             .fill(isPrimary ? Color.teal.opacity(0.05) : Color.clear)
                     )
+                    .contextMenu {
+                        if !isPrimary {
+                            Button {
+                                viewModel.setPrimaryItem(groupId: group.id, itemId: item.id)
+                            } label: {
+                                Label("Set as Primary (Keep)", systemImage: "checkmark.circle")
+                            }
+                        }
+
+                        Button {
+                            viewModel.revealInFinder(url: item.url)
+                        } label: {
+                            Label("Reveal in Finder", systemImage: "arrow.up.forward.square")
+                        }
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            viewModel.promptDeleteDuplicateInstance(item: item, in: group)
+                        } label: {
+                            Label(isItemLocalOnly ? "Delete This Instance..." : "Delete This Instance from Mac & Cloud...", systemImage: "trash")
+                        }
+                    }
                 }
             }
         }
