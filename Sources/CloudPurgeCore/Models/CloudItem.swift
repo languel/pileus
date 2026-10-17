@@ -54,7 +54,15 @@ public enum FileKind: String, CaseIterable, Sendable, Codable {
     case other = "Other"
 
     public static func kind(for url: URL) -> FileKind {
-        let ext = url.pathExtension.lowercased()
+        return kind(forFileName: url.lastPathComponent)
+    }
+
+    public static func kind(forFileName fileName: String) -> FileKind {
+        guard let dotIndex = fileName.lastIndex(of: "."),
+              dotIndex < fileName.index(before: fileName.endIndex) else {
+            return .other
+        }
+        let ext = fileName[fileName.index(after: dotIndex)...].lowercased()
         switch ext {
         case "mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv", "flv":
             return .video
@@ -95,7 +103,8 @@ public enum FileKind: String, CaseIterable, Sendable, Codable {
 
 public struct CloudItem: Identifiable, Hashable, Sendable {
     public let id: UUID
-    public let url: URL
+    public let path: String
+    public var url: URL { URL(fileURLWithPath: path) }
     public let name: String
     public let relativePath: String
     public let parentFolderPath: String
@@ -112,6 +121,55 @@ public struct CloudItem: Identifiable, Hashable, Sendable {
     public let modificationDate: Date?
     public let creationDate: Date?
     public let lastAccessDate: Date?
+
+    /// Fast deterministic UUID generator that avoids kernel CSPRNG overhead when scanning 500k+ files.
+    @inline(__always)
+    public static func makeFastID(seed: UInt64, index: UInt64) -> UUID {
+        var pair = (seed.bigEndian, index.bigEndian)
+        return withUnsafeBytes(of: &pair) { rawBuffer in
+            rawBuffer.load(as: UUID.self)
+        }
+    }
+
+    public init(
+        id: UUID = UUID(),
+        path: String,
+        name: String,
+        relativePath: String,
+        parentFolderPath: String,
+        providerId: String,
+        fileSize: Int64,
+        allocatedSize: Int64,
+        isDataless: Bool,
+        isUploaded: Bool,
+        isUploading: Bool,
+        isDownloading: Bool,
+        hasConflicts: Bool,
+        syncStatus: SyncStatus,
+        kind: FileKind,
+        modificationDate: Date?,
+        creationDate: Date?,
+        lastAccessDate: Date?
+    ) {
+        self.id = id
+        self.path = path
+        self.name = name
+        self.relativePath = relativePath
+        self.parentFolderPath = parentFolderPath
+        self.providerId = providerId
+        self.fileSize = fileSize
+        self.allocatedSize = allocatedSize
+        self.isDataless = isDataless
+        self.isUploaded = isUploaded
+        self.isUploading = isUploading
+        self.isDownloading = isDownloading
+        self.hasConflicts = hasConflicts
+        self.syncStatus = syncStatus
+        self.kind = kind
+        self.modificationDate = modificationDate
+        self.creationDate = creationDate
+        self.lastAccessDate = lastAccessDate
+    }
 
     public init(
         id: UUID = UUID(),
@@ -133,28 +191,44 @@ public struct CloudItem: Identifiable, Hashable, Sendable {
         creationDate: Date?,
         lastAccessDate: Date?
     ) {
-        self.id = id
-        self.url = url
-        self.name = name
-        self.relativePath = relativePath
-        self.parentFolderPath = parentFolderPath
-        self.providerId = providerId
-        self.fileSize = fileSize
-        self.allocatedSize = allocatedSize
-        self.isDataless = isDataless
-        self.isUploaded = isUploaded
-        self.isUploading = isUploading
-        self.isDownloading = isDownloading
-        self.hasConflicts = hasConflicts
-        self.syncStatus = syncStatus
-        self.kind = kind
-        self.modificationDate = modificationDate
-        self.creationDate = creationDate
-        self.lastAccessDate = lastAccessDate
+        self.init(
+            id: id,
+            path: url.path,
+            name: name,
+            relativePath: relativePath,
+            parentFolderPath: parentFolderPath,
+            providerId: providerId,
+            fileSize: fileSize,
+            allocatedSize: allocatedSize,
+            isDataless: isDataless,
+            isUploaded: isUploaded,
+            isUploading: isUploading,
+            isDownloading: isDownloading,
+            hasConflicts: hasConflicts,
+            syncStatus: syncStatus,
+            kind: kind,
+            modificationDate: modificationDate,
+            creationDate: creationDate,
+            lastAccessDate: lastAccessDate
+        )
     }
 
     /// True if the item is currently taking space on local disk and is fully synced to the cloud.
+    @inline(__always)
     public var isReclaimable: Bool {
         return syncStatus == .downloaded && allocatedSize > 0
+    }
+
+    public static func == (lhs: CloudItem, rhs: CloudItem) -> Bool {
+        return lhs.id == rhs.id &&
+               lhs.allocatedSize == rhs.allocatedSize &&
+               lhs.syncStatus == rhs.syncStatus &&
+               lhs.isDataless == rhs.isDataless
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(allocatedSize)
+        hasher.combine(syncStatus)
     }
 }

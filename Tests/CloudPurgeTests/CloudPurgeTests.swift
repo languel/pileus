@@ -171,4 +171,115 @@ final class CloudPurgeTests: XCTestCase {
 
         try FileManager.default.removeItem(at: tempDir)
     }
+
+    func testBatchFilterFastPathAndPredicates() {
+        let now = Date()
+        let item1 = CloudItem(
+            path: "/test/Sub/a.mov",
+            name: "a.mov",
+            relativePath: "Sub/a.mov",
+            parentFolderPath: "/test/Sub",
+            providerId: "p1",
+            fileSize: 200 * 1024 * 1024,
+            allocatedSize: 200 * 1024 * 1024,
+            isDataless: false,
+            isUploaded: true,
+            isUploading: false,
+            isDownloading: false,
+            hasConflicts: false,
+            syncStatus: .downloaded,
+            kind: .video,
+            modificationDate: now.addingTimeInterval(-60 * 86400),
+            creationDate: nil,
+            lastAccessDate: nil
+        )
+        let item2 = CloudItem(
+            path: "/test/Other/b.pdf",
+            name: "b.pdf",
+            relativePath: "Other/b.pdf",
+            parentFolderPath: "/test/Other",
+            providerId: "p1",
+            fileSize: 1024,
+            allocatedSize: 0,
+            isDataless: true,
+            isUploaded: true,
+            isUploading: false,
+            isDownloading: false,
+            hasConflicts: false,
+            syncStatus: .cloudOnly,
+            kind: .document,
+            modificationDate: now,
+            creationDate: nil,
+            lastAccessDate: nil
+        )
+
+        var filters = FilterOptions()
+        XCTAssertTrue(filters.isUnfiltered)
+        XCTAssertEqual(filters.filter(items: [item1, item2]).count, 2)
+
+        filters.statusFilter = .downloadedOnly
+        filters.sizeFilter = .greaterThan100MB
+        filters.ageFilter = .olderThan30Days
+        filters.kindFilter = .video
+        filters.selectedFolderPrefix = "Sub"
+        filters.searchText = "a.mov"
+        XCTAssertFalse(filters.isUnfiltered)
+
+        let matched = filters.filter(items: [item1, item2])
+        XCTAssertEqual(matched.count, 1)
+        XCTAssertEqual(matched.first?.name, "a.mov")
+    }
+
+    func testScanSessionControlPauseAndResumePreservesData() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("CloudPurgePauseTest_\(UUID().uuidString)")
+        let subDir = tempDir.appendingPathComponent("FolderA")
+        try FileManager.default.createDirectory(at: subDir, withIntermediateDirectories: true)
+
+        for i in 0..<300 {
+            let fileURL = subDir.appendingPathComponent("file_\(i).txt")
+            try "Sample content \(i)".write(to: fileURL, atomically: true, encoding: .utf8)
+        }
+
+        let control = ScanSessionControl()
+        control.pause()
+        XCTAssertTrue(control.isPaused)
+
+        // Resume shortly after scan starts so waitIfPaused unblocks and finishes without losing any files
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            control.resume()
+        }
+
+        let result = try await CloudScanner.shared.scanWithProgress(
+            rootURL: tempDir,
+            providerId: "pause-test",
+            control: control
+        )
+
+        XCTAssertEqual(result.items.count, 300)
+        XCTAssertEqual(result.folderNodes.first?.totalFilesCount, 300)
+        try FileManager.default.removeItem(at: tempDir)
+    }
+
+    @MainActor
+    func testCustomFolderAddAndRemove() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("CustomFolderTest_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let vm = AppViewModel()
+        let initialCount = vm.providers.count
+
+        vm.addCustomFolder(url: tempDir)
+        XCTAssertEqual(vm.providers.count, initialCount + 1)
+        guard let added = vm.providers.last, added.type == .custom else {
+            XCTFail("Expected custom provider to be added")
+            return
+        }
+        XCTAssertEqual(vm.selectedProvider?.id, added.id)
+
+        vm.removeCustomProvider(added)
+        XCTAssertFalse(vm.providers.contains(where: { $0.id == added.id }))
+        XCTAssertNil(vm.providerStates[added.id])
+    }
 }

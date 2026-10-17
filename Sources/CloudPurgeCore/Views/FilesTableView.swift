@@ -3,20 +3,86 @@ import SwiftUI
 struct FilesTableView: View {
     @ObservedObject var viewModel: AppViewModel
 
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     var body: some View {
         VStack(spacing: 0) {
+            // Optional active folder filter banner
+            if let folderPrefix = viewModel.filterOptions.selectedFolderPrefix, !folderPrefix.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.accentColor)
+                    Text("Filtered to folder:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(folderPrefix)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Button("Clear Folder Filter") {
+                        viewModel.filterOptions.selectedFolderPrefix = nil
+                    }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.08))
+                Divider()
+            }
+
             if viewModel.allItems.isEmpty && viewModel.isScanning {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.regular)
-                    Text("Scanning cloud files...")
-                        .font(.headline)
+                VStack(spacing: 14) {
+                    if viewModel.isPaused {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundColor(.orange)
+                        Text("Scan Paused (\(viewModel.selectedProvider?.name ?? "cloud files"))")
+                            .font(.headline)
+                    } else {
+                        ProgressView()
+                            .controlSize(.regular)
+                        Text("Scanning \(viewModel.selectedProvider?.name ?? "cloud files")...")
+                            .font(.headline)
+                    }
                     Text(viewModel.scanProgressText)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: 500)
+
+                    HStack(spacing: 10) {
+                        Button(viewModel.isPaused ? "Resume Scan" : "Pause Scan") {
+                            viewModel.togglePauseScan()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(viewModel.isPaused ? .green : .orange)
+                        .controlSize(.small)
+
+                        Button("Stop Scan") {
+                            viewModel.cancelScan()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if viewModel.filteredAndSortedItems.isEmpty {
+            } else if viewModel.displayedItems.isEmpty && viewModel.isFiltering {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Loading files for \(viewModel.selectedProvider?.name ?? "source")...")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.displayedItems.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "tray")
                         .font(.system(size: 40))
@@ -33,7 +99,7 @@ struct FilesTableView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Table(viewModel.filteredAndSortedItems, selection: $viewModel.selectedItemIds) {
+                Table(viewModel.displayedItems, selection: $viewModel.selectedItemIds) {
                     TableColumn("Name") { item in
                         HStack(spacing: 8) {
                             Image(systemName: item.kind.icon)
@@ -120,7 +186,7 @@ struct FilesTableView: View {
                     .width(min: 140, ideal: 160)
                 }
                 .contextMenu(forSelectionType: UUID.self) { selectedIds in
-                    let selectedItems = viewModel.allItems.filter { selectedIds.contains($0.id) }
+                    let selectedItems = viewModel.displayedItems.filter { selectedIds.contains($0.id) }
                     let reclaimable = selectedItems.filter { $0.isReclaimable }
 
                     if !reclaimable.isEmpty {
@@ -140,17 +206,30 @@ struct FilesTableView: View {
                         }
                         Button("Copy File Path") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(single.url.path, forType: .string)
+                            NSPasteboard.general.setString(single.path, forType: .string)
                         }
                     }
                 }
             }
 
             // Table Footer summary
-            HStack {
-                Text("\(viewModel.filteredAndSortedItems.count) of \(viewModel.allItems.count) files shown")
+            HStack(spacing: 10) {
+                if viewModel.totalMatchingCount > viewModel.displayedItems.count {
+                    Text("Showing top \(viewModel.displayedItems.count.formatted()) of \(viewModel.totalMatchingCount.formatted()) matching files")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Button("Load More (+1,000)") {
+                        viewModel.loadMoreItems()
+                    }
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                } else {
+                    Text("\(viewModel.totalMatchingCount.formatted()) of \(viewModel.allItems.count.formatted()) files shown")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
 
                 if !viewModel.selectedItemIds.isEmpty {
                     Text("•  \(viewModel.selectedItemIds.count) selected")
@@ -162,13 +241,26 @@ struct FilesTableView: View {
                 Spacer()
 
                 if viewModel.isScanning {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
+                    HStack(spacing: 8) {
+                        if viewModel.isPaused {
+                            Image(systemName: "pause.circle.fill")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                         Text(viewModel.scanProgressText)
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(viewModel.isPaused ? .orange : .secondary)
                             .lineLimit(1)
+
+                        Button(viewModel.isPaused ? "Resume" : "Pause") {
+                            viewModel.togglePauseScan()
+                        }
+                        .font(.caption2)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
                     }
                 } else {
                     Text(viewModel.scanProgressText)
@@ -185,10 +277,7 @@ struct FilesTableView: View {
 
     private func formattedDate(_ date: Date?) -> String {
         guard let date = date else { return "--" }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return Self.dateFormatter.string(from: date)
     }
 }
 

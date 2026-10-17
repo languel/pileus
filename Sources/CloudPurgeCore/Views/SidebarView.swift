@@ -3,6 +3,14 @@ import SwiftUI
 struct SidebarView: View {
     @ObservedObject var viewModel: AppViewModel
 
+    private var builtInProviders: [CloudProvider] {
+        viewModel.providers.filter { $0.type != .custom }
+    }
+
+    private var customProviders: [CloudProvider] {
+        viewModel.providers.filter { $0.type == .custom }
+    }
+
     var body: some View {
         List(selection: Binding(
             get: { viewModel.selectedProvider?.id },
@@ -13,47 +21,16 @@ struct SidebarView: View {
             }
         )) {
             Section(header: Text("Cloud Services").font(.subheadline).foregroundColor(.secondary)) {
-                ForEach(viewModel.providers) { provider in
-                    HStack(spacing: 10) {
-                        Image(systemName: provider.type.systemIcon)
-                            .font(.system(size: 18))
-                            .foregroundColor(providerColor(provider.type))
-                            .frame(width: 24)
+                ForEach(builtInProviders) { provider in
+                    providerRow(provider)
+                }
+            }
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(provider.name)
-                                .font(.body)
-                                .fontWeight(.medium)
-                                .lineLimit(1)
-
-                            if provider.totalCloudBytes > 0 {
-                                Text("\(ByteFormatter.string(fromByteCount: provider.reclaimableBytes)) local / \(ByteFormatter.string(fromByteCount: provider.totalCloudBytes))")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("Ready to scan")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        Spacer()
-
-                        if viewModel.selectedProvider?.id == provider.id && viewModel.isScanning {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else if provider.reclaimableBytes > 0 {
-                            Text(ByteFormatter.string(fromByteCount: provider.reclaimableBytes))
-                                .font(.caption2)
-                                .fontWeight(.semibold)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                                .foregroundColor(.accentColor)
-                        }
+            if !customProviders.isEmpty {
+                Section(header: Text("Custom Folders").font(.subheadline).foregroundColor(.secondary)) {
+                    ForEach(customProviders) { provider in
+                        providerRow(provider)
                     }
-                    .tag(provider.id)
-                    .padding(.vertical, 4)
                 }
             }
 
@@ -80,14 +57,149 @@ struct SidebarView: View {
 
                     Spacer()
 
-                    Text("CloudPurge")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    Button(action: {
+                        for p in viewModel.providers {
+                            viewModel.startScan(for: p, forceRestart: false)
+                        }
+                    }) {
+                        Text("Scan All")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.accentColor)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
             }
             .background(.ultraThinMaterial)
+        }
+    }
+
+    @ViewBuilder
+    private func providerRow(_ provider: CloudProvider) -> some View {
+        let pState = viewModel.state(for: provider.id)
+        HStack(spacing: 10) {
+            Image(systemName: provider.type.systemIcon)
+                .font(.system(size: 18))
+                .foregroundColor(providerColor(provider.type))
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.name)
+                    .font(.body)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+
+                if pState.isScanning && pState.isPaused {
+                    Text("Paused (\(pState.scannedCount.formatted()) files) • \(ByteFormatter.string(fromByteCount: pState.reclaimableBytes))")
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                        .lineLimit(1)
+                } else if pState.isScanning {
+                    Text("Scanning (\(pState.scannedCount.formatted()) files) • \(ByteFormatter.string(fromByteCount: pState.reclaimableBytes))")
+                        .font(.caption2)
+                        .foregroundColor(.accentColor)
+                        .lineLimit(1)
+                } else if pState.hasCompletedScan || !pState.items.isEmpty || provider.totalCloudBytes > 0 {
+                    Text("\(ByteFormatter.string(fromByteCount: pState.reclaimableBytes)) local / \(ByteFormatter.string(fromByteCount: pState.totalCloudBytes))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("Click to scan")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            if pState.isScanning {
+                Button(action: {
+                    viewModel.togglePauseScan(for: provider.id)
+                }) {
+                    Image(systemName: pState.isPaused ? "play.circle.fill" : "pause.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(pState.isPaused ? .green : .orange)
+                }
+                .buttonStyle(.plain)
+                .help(pState.isPaused ? "Resume Scan" : "Pause Scan")
+
+                if !pState.isPaused {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            } else if pState.reclaimableBytes > 0 {
+                Text(ByteFormatter.string(fromByteCount: pState.reclaimableBytes))
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                    .foregroundColor(.accentColor)
+            } else if pState.hasCompletedScan {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundColor(.green)
+            }
+
+            if provider.type == .custom {
+                Button(action: {
+                    viewModel.removeCustomProvider(provider)
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary.opacity(0.75))
+                }
+                .buttonStyle(.plain)
+                .help("Remove Custom Folder from List")
+            }
+        }
+        .tag(provider.id)
+        .padding(.vertical, 4)
+        .contextMenu {
+            if pState.isScanning {
+                if pState.isPaused {
+                    Button {
+                        viewModel.resumeScan(for: provider.id)
+                    } label: {
+                        Label("Resume Scan", systemImage: "play.fill")
+                    }
+                } else {
+                    Button {
+                        viewModel.pauseScan(for: provider.id)
+                    } label: {
+                        Label("Pause Scan", systemImage: "pause.fill")
+                    }
+                }
+
+                Button {
+                    viewModel.cancelScan(for: provider.id)
+                } label: {
+                    Label("Stop Scan (Keep Results)", systemImage: "stop.fill")
+                }
+            } else {
+                Button {
+                    viewModel.startScan(for: provider, forceRestart: true)
+                } label: {
+                    Label("Rescan \(provider.name)", systemImage: "arrow.clockwise")
+                }
+            }
+
+            Button {
+                viewModel.revealInFinder(url: provider.rootURL)
+            } label: {
+                Label("Reveal in Finder", systemImage: "folder")
+            }
+
+            if provider.type == .custom {
+                Divider()
+                Button(role: .destructive) {
+                    viewModel.removeCustomProvider(provider)
+                } label: {
+                    Label("Remove from List", systemImage: "trash")
+                }
+            }
         }
     }
 

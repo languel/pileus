@@ -77,7 +77,7 @@ public enum FileKindFilter: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-public struct FilterOptions: Sendable {
+public struct FilterOptions: Sendable, Equatable {
     public var searchText: String = ""
     public var statusFilter: StatusFilter = .all
     public var sizeFilter: SizeFilter = .any
@@ -87,22 +87,82 @@ public struct FilterOptions: Sendable {
 
     public init() {}
 
+    public var isUnfiltered: Bool {
+        return searchText.isEmpty &&
+               statusFilter == .all &&
+               sizeFilter == .any &&
+               ageFilter == .any &&
+               kindFilter == .all &&
+               (selectedFolderPrefix == nil || selectedFolderPrefix?.isEmpty == true)
+    }
+
+    /// Batch filters an array of items using pre-computed filter thresholds.
+    public func filter(items: [CloudItem]) -> [CloudItem] {
+        if isUnfiltered {
+            return items
+        }
+
+        let hasQuery = !searchText.isEmpty
+        let query = searchText
+        let folderPrefix = (selectedFolderPrefix?.isEmpty == false) ? selectedFolderPrefix : nil
+        let minBytes = sizeFilter.minimumBytes
+        let cutoffDate: Date? = ageFilter.days > 0 ? Date().addingTimeInterval(-Double(ageFilter.days * 86400)) : nil
+        let targetKind = kindFilter.matchingKind
+        let status = statusFilter
+
+        var result: [CloudItem] = []
+        result.reserveCapacity(min(items.count, 4096))
+
+        for item in items {
+            // 1. Fast integer / enum checks first before string comparisons
+            switch status {
+            case .all:
+                break
+            case .downloadedOnly:
+                if item.syncStatus != .downloaded { continue }
+            case .cloudOnly:
+                if item.syncStatus != .cloudOnly { continue }
+            case .syncingOnly:
+                let s = item.syncStatus
+                if s != .uploading && s != .downloading && s != .unsynced && s != .conflict {
+                    continue
+                }
+            }
+
+            if minBytes > 0 {
+                let effectiveSize = item.isReclaimable ? item.allocatedSize : item.fileSize
+                if effectiveSize < minBytes { continue }
+            }
+
+            if let targetKind = targetKind {
+                if item.kind != targetKind { continue }
+            }
+
+            if let cutoff = cutoffDate {
+                guard let refDate = item.lastAccessDate ?? item.modificationDate ?? item.creationDate,
+                      refDate <= cutoff else {
+                    continue
+                }
+            }
+
+            if let prefix = folderPrefix {
+                if !item.relativePath.hasPrefix(prefix) { continue }
+            }
+
+            if hasQuery {
+                if item.name.range(of: query, options: .caseInsensitive) == nil &&
+                   item.relativePath.range(of: query, options: .caseInsensitive) == nil {
+                    continue
+                }
+            }
+
+            result.append(item)
+        }
+
+        return result
+    }
+
     public func matches(item: CloudItem) -> Bool {
-        // Search text
-        if !searchText.isEmpty {
-            let query = searchText.lowercased()
-            if !item.name.lowercased().contains(query) && !item.relativePath.lowercased().contains(query) {
-                return false
-            }
-        }
-
-        // Folder filter
-        if let prefix = selectedFolderPrefix, !prefix.isEmpty {
-            if !item.relativePath.hasPrefix(prefix) {
-                return false
-            }
-        }
-
         // Status filter
         switch statusFilter {
         case .all:
@@ -117,7 +177,7 @@ public struct FilterOptions: Sendable {
             }
         }
 
-        // Size filter (filter by the space taken or file size)
+        // Size filter
         if sizeFilter.minimumBytes > 0 {
             let effectiveSize = item.isReclaimable ? item.allocatedSize : item.fileSize
             if effectiveSize < sizeFilter.minimumBytes {
@@ -125,7 +185,14 @@ public struct FilterOptions: Sendable {
             }
         }
 
-        // Age filter (based on last access date or modification date)
+        // Kind filter
+        if let targetKind = kindFilter.matchingKind {
+            if item.kind != targetKind {
+                return false
+            }
+        }
+
+        // Age filter
         if ageFilter.days > 0 {
             let referenceDate = item.lastAccessDate ?? item.modificationDate ?? item.creationDate
             guard let date = referenceDate else { return false }
@@ -135,9 +202,17 @@ public struct FilterOptions: Sendable {
             }
         }
 
-        // Kind filter
-        if let targetKind = kindFilter.matchingKind {
-            if item.kind != targetKind {
+        // Folder filter
+        if let prefix = selectedFolderPrefix, !prefix.isEmpty {
+            if !item.relativePath.hasPrefix(prefix) {
+                return false
+            }
+        }
+
+        // Search text
+        if !searchText.isEmpty {
+            if item.name.range(of: searchText, options: .caseInsensitive) == nil &&
+               item.relativePath.range(of: searchText, options: .caseInsensitive) == nil {
                 return false
             }
         }

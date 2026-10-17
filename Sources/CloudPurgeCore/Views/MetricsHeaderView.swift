@@ -9,7 +9,7 @@ struct MetricsHeaderView: View {
             MetricCard(
                 title: "Reclaimable Disk Space",
                 value: ByteFormatter.string(fromByteCount: viewModel.totalReclaimableBytes),
-                subtitle: "\(viewModel.totalDownloadedCount) files downloaded locally",
+                subtitle: "\(viewModel.totalDownloadedCount.formatted()) files downloaded locally",
                 systemImage: "arrow.down.to.line.compact",
                 tintColor: .green
             )
@@ -18,7 +18,7 @@ struct MetricsHeaderView: View {
             MetricCard(
                 title: "Cloud Total",
                 value: ByteFormatter.string(fromByteCount: viewModel.totalCloudBytes),
-                subtitle: "\(viewModel.allItems.count) files in cloud index",
+                subtitle: "\(viewModel.scannedCount.formatted()) files in cloud index",
                 systemImage: "icloud",
                 tintColor: .blue
             )
@@ -98,19 +98,42 @@ struct MetricsHeaderView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
-                    .disabled(viewModel.totalReclaimableBytes == 0 || viewModel.isEvicting)
+                    .disabled(viewModel.matchingReclaimableBytes == 0 || viewModel.isEvicting || (viewModel.isScanning && !viewModel.isPaused))
                 }
 
-                Button(action: { viewModel.startScan() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("Rescan")
+                if viewModel.isScanning {
+                    HStack(spacing: 12) {
+                        Button(action: { viewModel.togglePauseScan() }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: viewModel.isPaused ? "play.circle.fill" : "pause.circle.fill")
+                                Text(viewModel.isPaused ? "Resume" : "Pause")
+                            }
+                            .font(.caption)
+                            .foregroundColor(viewModel.isPaused ? .green : .orange)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(action: { viewModel.cancelScan() }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "stop.circle")
+                                Text("Stop")
+                            }
+                            .font(.caption)
+                            .foregroundColor(.red)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                } else {
+                    Button(action: { viewModel.startScan(forceRestart: true) }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Rescan")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isScanning)
             }
             .frame(width: 170)
         }

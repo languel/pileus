@@ -79,11 +79,22 @@ public struct MainView: View {
         }
         .navigationTitle(viewModel.selectedProvider?.name ?? "CloudPurge")
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button(action: { viewModel.startScan() }) {
+            ToolbarItemGroup(placement: .automatic) {
+                if viewModel.isScanning {
+                    Button(action: { viewModel.togglePauseScan() }) {
+                        Label(
+                            viewModel.isPaused ? "Resume Scan" : "Pause Scan",
+                            systemImage: viewModel.isPaused ? "play.fill" : "pause.fill"
+                        )
+                    }
+                    .help(viewModel.isPaused ? "Resume scanning where it left off" : "Pause scan without losing progress")
+                }
+
+                Button(action: { viewModel.startScan(forceRestart: true) }) {
                     Label("Scan Drive", systemImage: "arrow.clockwise")
                 }
-                .disabled(viewModel.isScanning)
+                .disabled(viewModel.isScanning && !viewModel.isPaused)
+                .help("Rescan current source")
             }
         }
     }
