@@ -89,21 +89,39 @@ struct FolderAnalyzerView: View {
 
                     Spacer()
 
-                    if isSearching && !matchingReclaimableFolders.isEmpty {
+                    if isSearching && !displayedFolders.isEmpty {
+                        let label = activeQuery.isEmpty ? "Filtered Folders" : activeQuery
+
+                        if !matchingReclaimableFolders.isEmpty {
+                            Button(action: {
+                                viewModel.promptEvictMultipleFolders(nodes: matchingReclaimableFolders, label: label)
+                            }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "arrow.up.to.line.compact")
+                                    Text("Evict All \(matchingReclaimableFolders.count) (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)))")
+                                }
+                                .font(.caption)
+                                .fontWeight(.medium)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.orange)
+                            .disabled(viewModel.isEvicting)
+                        }
+
                         Button(action: {
-                            let label = activeQuery.isEmpty ? "Filtered Folders" : activeQuery
-                            viewModel.promptEvictMultipleFolders(nodes: matchingReclaimableFolders, label: label)
+                            viewModel.promptDeleteMultipleFolders(nodes: displayedFolders, label: label)
                         }) {
                             HStack(spacing: 5) {
-                                Image(systemName: "arrow.up.to.line.compact")
-                                Text("Evict All \(matchingReclaimableFolders.count) Folders (\(ByteFormatter.string(fromByteCount: matchingTotalReclaimableBytes)))")
+                                Image(systemName: "trash")
+                                Text("Delete All \(displayedFolders.count) from Cloud")
                             }
                             .font(.caption)
                             .fontWeight(.medium)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.orange)
+                        .buttonStyle(.bordered)
+                        .tint(.red)
                         .disabled(viewModel.isEvicting)
+                        .help("Permanently delete all matching folders from Mac and Cloud storage")
                     }
 
                     Picker("Sort by:", selection: $folderSortOption) {
@@ -346,6 +364,19 @@ struct FolderRowView: View {
                     .disabled(node.reclaimableBytes == 0 || viewModel.isEvicting)
                     .help("Recursively evict all downloaded files in this folder (remains in cloud)")
 
+                    // Delete from Mac & Cloud button
+                    Button(action: { viewModel.promptDeleteFolder(node: node) }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                            Text("Delete")
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .disabled(viewModel.isEvicting)
+                    .help("Permanently delete this folder from your Mac and from Cloud storage")
+
                     // Filter files to this folder
                     Button(action: {
                         viewModel.filterOptions.selectedFolderPrefix = node.relativePath
@@ -364,6 +395,36 @@ struct FolderRowView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Reveal in Finder")
+                }
+            }
+            .contextMenu {
+                if node.reclaimableBytes > 0 {
+                    Button {
+                        viewModel.promptEvictFolder(node: node)
+                    } label: {
+                        Label("Evict Local Copies (\(ByteFormatter.string(fromByteCount: node.reclaimableBytes)))", systemImage: "arrow.up.to.line.compact")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    viewModel.promptDeleteFolder(node: node)
+                } label: {
+                    Label("Delete '\(node.name)' from Mac & Cloud...", systemImage: "trash")
+                }
+
+                Divider()
+
+                Button {
+                    viewModel.filterOptions.selectedFolderPrefix = node.relativePath
+                    viewModel.activeTab = .files
+                } label: {
+                    Label("View Files in Folder", systemImage: "list.bullet")
+                }
+
+                Button {
+                    viewModel.revealInFinder(url: node.url)
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
                 }
             }
 

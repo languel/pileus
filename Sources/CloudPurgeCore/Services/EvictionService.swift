@@ -1,12 +1,20 @@
 import Foundation
 
+public enum PurgeActionMode: String, Sendable {
+    case evictLocalOnly = "Evict Local Copy"
+    case deleteEverywhere = "Delete from Mac & Cloud"
+}
+
 public struct EvictionReport: Sendable {
+    public let actionMode: PurgeActionMode
     public let totalRequested: Int
     public let successfullyEvicted: Int
     public let skippedCount: Int
     public let bytesReclaimed: Int64
+    public let cloudBytesDeleted: Int64
     public let failedItems: [(url: URL, reason: String)]
     public let evictedItemIds: Set<UUID>
+    public let deletedFolderPaths: [String]
     public let wasCancelled: Bool
 }
 
@@ -99,18 +107,20 @@ public final class EvictionService: Sendable {
             let total = items.count
             guard total > 0 else {
                 return EvictionReport(
+                    actionMode: .evictLocalOnly,
                     totalRequested: 0,
                     successfullyEvicted: 0,
                     skippedCount: 0,
                     bytesReclaimed: 0,
+                    cloudBytesDeleted: 0,
                     failedItems: [],
                     evictedItemIds: [],
+                    deletedFolderPaths: [],
                     wasCancelled: false
                 )
             }
 
             // Fast Path: If whole folders (such as node_modules) were requested, ask macOS to evict the folder URLs directly first.
-            // On modern macOS / iCloud Drive / FileProvider, evictUbiquitousItem on a directory can evict the subtree in one XPC call.
             var remainingItems: [CloudItem] = []
             var preEvictedSuccessCount = 0
             var preEvictedBytes: Int64 = 0
@@ -128,7 +138,6 @@ public final class EvictionService: Sendable {
                 }
 
                 if !folderEvictedPrefixes.isEmpty {
-                    // Verify a sample file inside each prefix to see if directory-level eviction immediately demoted children
                     for item in items {
                         if folderEvictedPrefixes.contains(where: { item.path.hasPrefix($0) }) {
                             let st = DatalessDetector.statInfo(forPath: item.path)
@@ -153,18 +162,19 @@ public final class EvictionService: Sendable {
 
             if remainingItems.isEmpty {
                 return EvictionReport(
+                    actionMode: .evictLocalOnly,
                     totalRequested: total,
                     successfullyEvicted: preEvictedSuccessCount,
                     skippedCount: 0,
                     bytesReclaimed: preEvictedBytes,
+                    cloudBytesDeleted: 0,
                     failedItems: [],
                     evictedItemIds: preEvictedIds,
+                    deletedFolderPaths: [],
                     wasCancelled: false
                 )
             }
 
-            // Concurrent Worker Pool (8 workers) for remaining files so tens of thousands of node_modules files
-            // don't bottleneck on sequential XPC latency.
             let workerCount = min(8, max(1, remainingItems.count))
             let chunkSize = (remainingItems.count + workerCount - 1) / workerCount
 
@@ -216,12 +226,15 @@ public final class EvictionService: Sendable {
 
                 func snapshot(total: Int, wasCancelled: Bool) -> EvictionReport {
                     return EvictionReport(
+                        actionMode: .evictLocalOnly,
                         totalRequested: total,
                         successfullyEvicted: successCount,
                         skippedCount: skippedCount,
                         bytesReclaimed: bytesReclaimed,
+                        cloudBytesDeleted: 0,
                         failedItems: failedItems,
                         evictedItemIds: evictedIds,
+                        deletedFolderPaths: [],
                         wasCancelled: wasCancelled
                     )
                 }
@@ -299,7 +312,7 @@ public final class EvictionService: Sendable {
                                 successDelta: localSuccess,
                                 skippedDelta: localSkipped,
                                 bytesDelta: localBytes,
-                                ids: localIds,
+                                ids: localBytes >= 0 ? localIds : [],
                                 failures: localFailures,
                                 total: total,
                                 forceReport: true,
@@ -312,6 +325,99 @@ public final class EvictionService: Sendable {
 
             let cancelled = (control?.isStopped ?? false) || Task.isCancelled
             return await tracker.snapshot(total: total, wasCancelled: cancelled)
+        }.value
+    }
+
+    /// Permanently deletes items or entire directories (such as `node_modules`) from both local disk and cloud storage.
+    /// Deleting a directory via `FileManager.removeItem(at:)` removes the entire folder tree in one operation without
+    /// needing per-file XPC eviction calls.
+    public func deleteBatch(
+        items: [CloudItem],
+        rootFolderURLs: [URL] = [],
+        control: ScanSessionControl? = nil,
+        onProgress: (@Sendable (Int, Int, Int64) -> Void)? = nil
+    ) async -> EvictionReport {
+        return await Task.detached(priority: .userInitiated) {
+            let total = items.count
+            var deletedIds = Set<UUID>()
+            deletedIds.reserveCapacity(total)
+            var deletedFolderPaths: [String] = []
+            var localBytesFreed: Int64 = 0
+            var cloudBytesDeleted: Int64 = 0
+            var failedItems: [(url: URL, reason: String)] = []
+
+            // 1. If whole folders were selected (e.g. node_modules), delete each directory tree directly!
+            if !rootFolderURLs.isEmpty {
+                for (fIdx, folderURL) in rootFolderURLs.enumerated() {
+                    if (control?.isStopped ?? false) || Task.isCancelled { break }
+                    if let ctrl = control, !ctrl.waitIfPaused() { break }
+
+                    let folderPath = folderURL.path
+                    let prefix = folderPath.hasSuffix("/") ? folderPath : (folderPath + "/")
+
+                    do {
+                        if FileManager.default.fileExists(atPath: folderPath) {
+                            try FileManager.default.removeItem(at: folderURL)
+                        }
+                        deletedFolderPaths.append(folderPath)
+
+                        // Account for all items inside this deleted folder
+                        for item in items where item.parentFolderPath == folderPath || item.path.hasPrefix(prefix) {
+                            if deletedIds.insert(item.id).inserted {
+                                localBytesFreed += item.allocatedSize
+                                cloudBytesDeleted += item.fileSize
+                            }
+                        }
+
+                        onProgress?(deletedIds.count, max(1, total), localBytesFreed)
+                    } catch {
+                        failedItems.append((url: folderURL, reason: error.localizedDescription))
+                    }
+
+                    if fIdx + 1 == rootFolderURLs.count {
+                        onProgress?(deletedIds.count, max(1, total), localBytesFreed)
+                    }
+                }
+            }
+
+            // 2. Delete any remaining individual files not covered by rootFolderURLs
+            var lastReportTime = CFAbsoluteTimeGetCurrent()
+            for (idx, item) in items.enumerated() {
+                if deletedIds.contains(item.id) { continue }
+                if (control?.isStopped ?? false) || Task.isCancelled { break }
+                if let ctrl = control, !ctrl.waitIfPaused() { break }
+
+                do {
+                    if FileManager.default.fileExists(atPath: item.path) {
+                        try FileManager.default.removeItem(atPath: item.path)
+                    }
+                    deletedIds.insert(item.id)
+                    localBytesFreed += item.allocatedSize
+                    cloudBytesDeleted += item.fileSize
+                } catch {
+                    failedItems.append((url: item.url, reason: error.localizedDescription))
+                }
+
+                let now = CFAbsoluteTimeGetCurrent()
+                if idx + 1 == total || (now - lastReportTime >= 0.12) {
+                    lastReportTime = now
+                    onProgress?(deletedIds.count, total, localBytesFreed)
+                }
+            }
+
+            let cancelled = (control?.isStopped ?? false) || Task.isCancelled
+            return EvictionReport(
+                actionMode: .deleteEverywhere,
+                totalRequested: total,
+                successfullyEvicted: deletedIds.count,
+                skippedCount: 0,
+                bytesReclaimed: localBytesFreed,
+                cloudBytesDeleted: cloudBytesDeleted,
+                failedItems: failedItems,
+                evictedItemIds: deletedIds,
+                deletedFolderPaths: deletedFolderPaths,
+                wasCancelled: cancelled
+            )
         }.value
     }
 

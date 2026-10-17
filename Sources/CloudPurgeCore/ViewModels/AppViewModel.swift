@@ -80,6 +80,7 @@ public final class AppViewModel: ObservableObject {
 
     // Confirmation Sheet State
     @Published public var showConfirmationSheet: Bool = false
+    @Published public var pendingActionMode: PurgeActionMode = .evictLocalOnly
     @Published public var pendingEvictionItems: [CloudItem] = []
     @Published public var pendingEvictionFolderURLs: [URL] = []
     @Published public var pendingEvictionTitle: String = ""
@@ -577,7 +578,7 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Eviction Actions
+    // MARK: - Eviction & Permanent Cloud Deletion Actions
 
     public func evictSingle(item: CloudItem) {
         guard item.isReclaimable else {
@@ -586,10 +587,20 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
+        pendingActionMode = .evictLocalOnly
         pendingEvictionItems = [item]
         pendingEvictionFolderURLs = []
         pendingEvictionTitle = "Evict Local Copy: \(item.name)"
         pendingEvictionDescription = "This will unload '\(item.name)' from local storage and make it cloud-only, freeing \(ByteFormatter.string(fromByteCount: item.allocatedSize)) on your Mac. The file remains safely stored in the cloud and can be reopened anytime."
+        showConfirmationSheet = true
+    }
+
+    public func deleteSingle(item: CloudItem) {
+        pendingActionMode = .deleteEverywhere
+        pendingEvictionItems = [item]
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = "Delete from Mac & Cloud: \(item.name)"
+        pendingEvictionDescription = "WARNING: This will permanently delete '\(item.name)' (\(ByteFormatter.string(fromByteCount: item.fileSize))) from your Mac AND from your cloud drive across all synced devices."
         showConfirmationSheet = true
     }
 
@@ -602,10 +613,28 @@ public final class AppViewModel: ObservableObject {
         }
 
         let totalFreed = items.reduce(0) { $0 + $1.allocatedSize }
+        pendingActionMode = .evictLocalOnly
         pendingEvictionItems = items
         pendingEvictionFolderURLs = []
         pendingEvictionTitle = "Evict Local Copies (\(items.count) Files)"
         pendingEvictionDescription = "You are about to unload \(items.count) selected files and reclaim \(ByteFormatter.string(fromByteCount: totalFreed)) on your Mac. These files will be converted to cloud placeholders and remain 100% preserved in the cloud."
+        showConfirmationSheet = true
+    }
+
+    public func promptDeleteSelection() {
+        let items = allItems.filter { selectedItemIds.contains($0.id) }
+        guard !items.isEmpty else {
+            errorMessage = "No files selected."
+            showErrorAlert = true
+            return
+        }
+
+        let totalCloud = items.reduce(0) { $0 + $1.fileSize }
+        pendingActionMode = .deleteEverywhere
+        pendingEvictionItems = items
+        pendingEvictionFolderURLs = []
+        pendingEvictionTitle = "Delete \(items.count) Files from Mac & Cloud"
+        pendingEvictionDescription = "WARNING: You are about to permanently delete \(items.count) files (\(ByteFormatter.string(fromByteCount: totalCloud)) cloud storage) from your Mac AND your cloud drive across all devices."
         showConfirmationSheet = true
     }
 
@@ -618,6 +647,7 @@ public final class AppViewModel: ObservableObject {
         }
 
         let totalFreed = items.reduce(0) { $0 + $1.allocatedSize }
+        pendingActionMode = .evictLocalOnly
         pendingEvictionItems = items
         pendingEvictionFolderURLs = []
         pendingEvictionTitle = "Evict All Matching Local Copies"
@@ -639,10 +669,34 @@ public final class AppViewModel: ObservableObject {
         }
 
         let totalFreed = itemsInFolder.reduce(0) { $0 + $1.allocatedSize }
+        pendingActionMode = .evictLocalOnly
         pendingEvictionItems = itemsInFolder
         pendingEvictionFolderURLs = [node.url]
         pendingEvictionTitle = "Evict Local Copies in '\(node.name)'"
         pendingEvictionDescription = "Recursively unload \(itemsInFolder.count.formatted()) downloaded files in '\(node.name)' and its subfolders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space while keeping them in the cloud."
+        showConfirmationSheet = true
+    }
+
+    public func promptDeleteFolder(node: CloudFolderNode) {
+        let folderPath = node.path
+        let folderPrefix = folderPath.hasSuffix("/") ? folderPath : (folderPath + "/")
+        let itemsInFolder = allItems.filter {
+            $0.parentFolderPath == folderPath || $0.path.hasPrefix(folderPrefix)
+        }
+
+        guard !itemsInFolder.isEmpty else {
+            errorMessage = "Folder '\(node.name)' is empty."
+            showErrorAlert = true
+            return
+        }
+
+        let totalLocal = itemsInFolder.reduce(0) { $0 + $1.allocatedSize }
+        let totalCloud = itemsInFolder.reduce(0) { $0 + $1.fileSize }
+        pendingActionMode = .deleteEverywhere
+        pendingEvictionItems = itemsInFolder
+        pendingEvictionFolderURLs = [node.url]
+        pendingEvictionTitle = "Delete '\(node.name)' from Mac & Cloud"
+        pendingEvictionDescription = "WARNING: This will permanently delete the entire '\(node.name)' folder (\(itemsInFolder.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal)) local / \(ByteFormatter.string(fromByteCount: totalCloud)) cloud) from your Mac AND your cloud storage."
         showConfirmationSheet = true
     }
 
@@ -676,10 +730,49 @@ public final class AppViewModel: ObservableObject {
         }
 
         let totalFreed = matchedItems.reduce(0) { $0 + $1.allocatedSize }
+        pendingActionMode = .evictLocalOnly
         pendingEvictionItems = matchedItems
         pendingEvictionFolderURLs = reclaimableFolders.map { $0.url }
         pendingEvictionTitle = "Evict Local Copies in \(reclaimableFolders.count) Folders (\(label))"
         pendingEvictionDescription = "Recursively unload \(matchedItems.count.formatted()) downloaded files across \(reclaimableFolders.count) matching folders, freeing \(ByteFormatter.string(fromByteCount: totalFreed)) of local disk space while keeping all files in the cloud."
+        showConfirmationSheet = true
+    }
+
+    /// Permanently deletes all matching folders (e.g., all `node_modules`) from both local disk and cloud storage.
+    public func promptDeleteMultipleFolders(nodes: [CloudFolderNode], label: String) {
+        guard !nodes.isEmpty else {
+            errorMessage = "No folders selected to delete."
+            showErrorAlert = true
+            return
+        }
+
+        let exactPaths = Set(nodes.map { $0.path })
+        let prefixes = nodes.map { $0.path.hasSuffix("/") ? $0.path : ($0.path + "/") }
+
+        var matchedItems: [CloudItem] = []
+        var seenIds = Set<UUID>()
+
+        for item in allItems {
+            if exactPaths.contains(item.parentFolderPath) || prefixes.contains(where: { item.path.hasPrefix($0) }) {
+                if seenIds.insert(item.id).inserted {
+                    matchedItems.append(item)
+                }
+            }
+        }
+
+        guard !matchedItems.isEmpty else {
+            errorMessage = "No files found in the matching folders."
+            showErrorAlert = true
+            return
+        }
+
+        let totalLocal = matchedItems.reduce(0) { $0 + $1.allocatedSize }
+        let totalCloud = matchedItems.reduce(0) { $0 + $1.fileSize }
+        pendingActionMode = .deleteEverywhere
+        pendingEvictionItems = matchedItems
+        pendingEvictionFolderURLs = nodes.map { $0.url }
+        pendingEvictionTitle = "Delete All \(nodes.count) '\(label)' Folders from Mac & Cloud"
+        pendingEvictionDescription = "WARNING: This will permanently delete all \(nodes.count) '\(label)' folders (\(matchedItems.count.formatted()) files, \(ByteFormatter.string(fromByteCount: totalLocal)) local / \(ByteFormatter.string(fromByteCount: totalCloud)) cloud) from your Mac AND from your cloud drive."
         showConfirmationSheet = true
     }
 
@@ -698,39 +791,58 @@ public final class AppViewModel: ObservableObject {
         guard isEvicting else { return }
         currentEvictControl?.stop()
         isEvictionPaused = false
-        evictionProgressText = "Stopping safely after current file..."
+        evictionProgressText = "Stopping safely after current operation..."
     }
 
     public func executeConfirmedEviction() {
         showConfirmationSheet = false
-        let itemsToEvict = pendingEvictionItems
-        let folderURLsToEvict = pendingEvictionFolderURLs
-        guard !itemsToEvict.isEmpty else { return }
-        let targetProviderId = itemsToEvict.first?.providerId ?? selectedProvider?.id
+        let mode = pendingActionMode
+        let itemsToProcess = pendingEvictionItems
+        let folderURLsToProcess = pendingEvictionFolderURLs
+        guard !itemsToProcess.isEmpty else { return }
+        let targetProviderId = itemsToProcess.first?.providerId ?? selectedProvider?.id
 
         let control = ScanSessionControl()
         currentEvictControl = control
         isEvicting = true
         isEvictionPaused = false
         evictionProgressCurrent = 0
-        evictionProgressTotal = itemsToEvict.count
-        evictionProgressText = "Evicting local copies..."
+        evictionProgressTotal = itemsToProcess.count
+        evictionProgressText = mode == .deleteEverywhere
+            ? "Deleting from Mac & Cloud..."
+            : "Evicting local copies..."
 
         currentEvictTask = Task { [weak self] in
             guard let self = self else { return }
-            let report = await EvictionService.shared.evictBatch(
-                items: itemsToEvict,
-                rootFolderURLs: folderURLsToEvict,
-                control: control
-            ) { [weak self] cur, total, freed in
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    self.evictionProgressCurrent = cur
-                    self.evictionProgressTotal = total
-                    if self.isEvictionPaused {
-                        self.evictionProgressText = "Paused at \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed so far)"
-                    } else {
-                        self.evictionProgressText = "Evicted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)..."
+            let report: EvictionReport
+            if mode == .deleteEverywhere {
+                report = await EvictionService.shared.deleteBatch(
+                    items: itemsToProcess,
+                    rootFolderURLs: folderURLsToProcess,
+                    control: control
+                ) { [weak self] cur, total, freed in
+                    Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+                        self.evictionProgressCurrent = cur
+                        self.evictionProgressTotal = total
+                        self.evictionProgressText = "Deleted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) local freed)..."
+                    }
+                }
+            } else {
+                report = await EvictionService.shared.evictBatch(
+                    items: itemsToProcess,
+                    rootFolderURLs: folderURLsToProcess,
+                    control: control
+                ) { [weak self] cur, total, freed in
+                    Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+                        self.evictionProgressCurrent = cur
+                        self.evictionProgressTotal = total
+                        if self.isEvictionPaused {
+                            self.evictionProgressText = "Paused at \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed so far)"
+                        } else {
+                            self.evictionProgressText = "Evicted \(cur.formatted()) of \(total.formatted()) files (\(ByteFormatter.string(fromByteCount: freed)) freed)..."
+                        }
                     }
                 }
             }
@@ -744,8 +856,134 @@ public final class AppViewModel: ObservableObject {
 
             // Update state in memory immediately without restarting a slow full scan!
             if let pid = targetProviderId, !report.evictedItemIds.isEmpty {
-                self.applyEvictionInMemory(providerId: pid, evictedIds: report.evictedItemIds)
+                if mode == .deleteEverywhere {
+                    self.applyDeletionInMemory(
+                        providerId: pid,
+                        deletedIds: report.evictedItemIds,
+                        deletedFolderPaths: report.deletedFolderPaths
+                    )
+                } else {
+                    self.applyEvictionInMemory(providerId: pid, evictedIds: report.evictedItemIds)
+                }
             }
+        }
+    }
+
+    /// Updates cached items and folder tree metrics in-memory in milliseconds after permanent deletion.
+    private func applyDeletionInMemory(providerId: String, deletedIds: Set<UUID>, deletedFolderPaths: [String]) {
+        guard var st = providerStates[providerId] else { return }
+
+        var deltaByFolder: [String: (cloudBytes: Int64, reclaimBytes: Int64, totalCount: Int, downloadedCount: Int)] = [:]
+        var totalCloudDeleted: Int64 = 0
+        var totalReclaimFreed: Int64 = 0
+        var totalDownloadedDeleted = 0
+
+        var remainingItems: [CloudItem] = []
+        remainingItems.reserveCapacity(max(0, st.items.count - deletedIds.count))
+
+        for item in st.items {
+            if deletedIds.contains(item.id) {
+                totalCloudDeleted += item.fileSize
+                let reclaim = item.isReclaimable ? item.allocatedSize : 0
+                let dlCount = item.isReclaimable ? 1 : 0
+                totalReclaimFreed += reclaim
+                totalDownloadedDeleted += dlCount
+
+                let parentPath = item.parentFolderPath
+                var entry = deltaByFolder[parentPath] ?? (0, 0, 0, 0)
+                entry.cloudBytes += item.fileSize
+                entry.reclaimBytes += reclaim
+                entry.totalCount += 1
+                entry.downloadedCount += dlCount
+                deltaByFolder[parentPath] = entry
+            } else {
+                remainingItems.append(item)
+            }
+        }
+
+        st.items = remainingItems
+        st.scannedCount = remainingItems.count
+        st.totalCloudBytes = max(0, st.totalCloudBytes - totalCloudDeleted)
+        st.reclaimableBytes = max(0, st.reclaimableBytes - totalReclaimFreed)
+        st.downloadedCount = max(0, st.downloadedCount - totalDownloadedDeleted)
+        st.scanProgressText = "Scan complete • \(st.items.count.formatted()) files (\(ByteFormatter.string(fromByteCount: st.reclaimableBytes)) reclaimable)"
+
+        let deletedFolderSet = Set(deletedFolderPaths)
+        let deletedFolderPrefixes = deletedFolderPaths.map { $0.hasSuffix("/") ? $0 : ($0 + "/") }
+
+        func isDeletedFolder(_ path: String) -> Bool {
+            if deletedFolderSet.contains(path) { return true }
+            return deletedFolderPrefixes.contains(where: { path.hasPrefix($0) })
+        }
+
+        func updateAndPruneNode(_ node: inout CloudFolderNode) -> Bool {
+            if isDeletedFolder(node.path) {
+                return false
+            }
+            let folderPath = node.path
+            let folderPrefix = folderPath.hasSuffix("/") ? folderPath : (folderPath + "/")
+            var cloudDelta: Int64 = 0
+            var reclaimDelta: Int64 = 0
+            var totalDelta = 0
+            var dlDelta = 0
+
+            for (dirPath, delta) in deltaByFolder {
+                if dirPath == folderPath || dirPath.hasPrefix(folderPrefix) {
+                    cloudDelta += delta.cloudBytes
+                    reclaimDelta += delta.reclaimBytes
+                    totalDelta += delta.totalCount
+                    dlDelta += delta.downloadedCount
+                }
+            }
+
+            node.totalCloudBytes = max(0, node.totalCloudBytes - cloudDelta)
+            node.reclaimableBytes = max(0, node.reclaimableBytes - reclaimDelta)
+            node.totalFilesCount = max(0, node.totalFilesCount - totalDelta)
+            node.downloadedFilesCount = max(0, node.downloadedFilesCount - dlDelta)
+
+            if node.totalFilesCount == 0 {
+                return false
+            }
+
+            var keptChildren: [CloudFolderNode] = []
+            for var child in node.children {
+                if updateAndPruneNode(&child) {
+                    keptChildren.append(child)
+                }
+            }
+            keptChildren.sort { $0.reclaimableBytes > $1.reclaimableBytes }
+            node.children = keptChildren
+            return true
+        }
+
+        var keptTopFolders: [CloudFolderNode] = []
+        for var node in st.folderNodes {
+            if updateAndPruneNode(&node) {
+                keptTopFolders.append(node)
+            }
+        }
+        keptTopFolders.sort { $0.reclaimableBytes > $1.reclaimableBytes }
+        st.folderNodes = keptTopFolders
+
+        var keptAllFolders: [CloudFolderNode] = []
+        for var node in st.allFolders {
+            if updateAndPruneNode(&node) {
+                keptAllFolders.append(node)
+            }
+        }
+        st.allFolders = keptAllFolders
+
+        providerStates[providerId] = st
+        updateProviderSummary(
+            providerId: providerId,
+            totalCloudBytes: st.totalCloudBytes,
+            reclaimableBytes: st.reclaimableBytes,
+            totalFilesCount: st.items.count,
+            downloadedCount: st.downloadedCount
+        )
+
+        if selectedProvider?.id == providerId {
+            scheduleFilterAndSort(debounceSearch: false)
         }
     }
 

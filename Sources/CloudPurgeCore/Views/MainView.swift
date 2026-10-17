@@ -88,17 +88,19 @@ public struct MainView: View {
         .sheet(isPresented: $viewModel.showConfirmationSheet) {
             EvictionConfirmSheet(viewModel: viewModel)
         }
-        .alert("Eviction Report", isPresented: $viewModel.showReportAlert) {
+        .alert(viewModel.lastReport?.actionMode == .deleteEverywhere ? "Deletion Report" : "Eviction Report", isPresented: $viewModel.showReportAlert) {
             Button("Done", role: .cancel) {}
         } message: {
             if let report = viewModel.lastReport {
-                if report.wasCancelled {
+                if report.actionMode == .deleteEverywhere {
+                    Text("Permanently deleted \(report.successfullyEvicted.formatted()) files from your Mac and cloud storage.\nFreed \(ByteFormatter.string(fromByteCount: report.bytesReclaimed)) on your Mac and \(ByteFormatter.string(fromByteCount: report.cloudBytesDeleted)) in the cloud.")
+                } else if report.wasCancelled {
                     Text("Stopped safely after evicting \(report.successfullyEvicted.formatted()) of \(report.totalRequested.formatted()) files.\nReclaimed \(ByteFormatter.string(fromByteCount: report.bytesReclaimed)) of local disk space.\nAll files remain safely preserved in cloud storage.")
                 } else {
                     Text("Successfully evicted \(report.successfullyEvicted.formatted()) local copies.\nReclaimed \(ByteFormatter.string(fromByteCount: report.bytesReclaimed)) of disk space on your Mac.\nFiles remain safely preserved in cloud storage.")
                 }
             } else {
-                Text("Eviction finished.")
+                Text("Operation finished.")
             }
         }
         .alert("Notice", isPresented: $viewModel.showErrorAlert) {

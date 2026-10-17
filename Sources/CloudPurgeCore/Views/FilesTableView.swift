@@ -175,6 +175,14 @@ struct FilesTableView: View {
                                 .help("Download file from cloud")
                             }
 
+                            Button(action: { viewModel.deleteSingle(item: item) }) {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundColor(.red.opacity(0.8))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Delete permanently from Mac & Cloud")
+
                             Button(action: { viewModel.revealInFinder(url: item.url) }) {
                                 Image(systemName: "folder")
                                     .font(.caption)
@@ -183,7 +191,7 @@ struct FilesTableView: View {
                             .help("Reveal in Finder")
                         }
                     }
-                    .width(min: 140, ideal: 160)
+                    .width(min: 155, ideal: 175)
                 }
                 .contextMenu(forSelectionType: UUID.self) { selectedIds in
                     let selectedItems = viewModel.displayedItems.filter { selectedIds.contains($0.id) }
@@ -195,7 +203,14 @@ struct FilesTableView: View {
                         }
                     }
 
+                    if !selectedItems.isEmpty {
+                        Button("Delete from Mac & Cloud (\(selectedItems.count) files)...", role: .destructive) {
+                            viewModel.promptDeleteSelection()
+                        }
+                    }
+
                     if selectedItems.count == 1, let single = selectedItems.first {
+                        Divider()
                         if single.syncStatus == .cloudOnly {
                             Button("Download Now") {
                                 viewModel.downloadItem(item: single)
