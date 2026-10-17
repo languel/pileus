@@ -387,4 +387,92 @@ final class CloudPurgeTests: XCTestCase {
         let resolvedURL = try URL(resolvingBookmarkData: bookmarkData, bookmarkDataIsStale: &isStale)
         XCTAssertEqual(resolvedURL.standardizedFileURL.path, fileA.standardizedFileURL.path)
     }
+
+    func testCloudOnlyMixedDuplicatesAndRelocatePrimaryToCanonicalFolder() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("RelocatePrimaryTest_\(UUID().uuidString)")
+        let dir1 = tempDir.appendingPathComponent("Project1")
+        let dir2 = tempDir.appendingPathComponent("Project2")
+        let canonicalDir = tempDir.appendingPathComponent("SharedCanonicalAssets")
+        try FileManager.default.createDirectory(at: dir1, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir2, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let payload = String(repeating: "SharedAssetContent-XYZ-9876543210\n", count: 64)
+        let file1 = dir1.appendingPathComponent("shared_model.bin")
+        let file2 = dir2.appendingPathComponent("shared_model.bin")
+        try payload.write(to: file1, atomically: true, encoding: .utf8)
+        try payload.write(to: file2, atomically: true, encoding: .utf8)
+
+        let item1Downloaded = CloudItem(
+            path: file1.path,
+            name: "shared_model.bin",
+            relativePath: "Project1/shared_model.bin",
+            parentFolderPath: dir1.path,
+            providerId: "p1",
+            fileSize: Int64(payload.utf8.count),
+            allocatedSize: Int64(payload.utf8.count),
+            isDataless: false,
+            isUploaded: true,
+            isUploading: false,
+            isDownloading: false,
+            hasConflicts: false,
+            syncStatus: .downloaded,
+            kind: .other,
+            modificationDate: Date(),
+            creationDate: Date(),
+            lastAccessDate: Date()
+        )
+
+        // Simulate item2 being an evicted Cloud-Only placeholder with identical size and filename
+        let item2CloudOnly = CloudItem(
+            path: file2.path,
+            name: "shared_model.bin",
+            relativePath: "Project2/shared_model.bin",
+            parentFolderPath: dir2.path,
+            providerId: "p1",
+            fileSize: Int64(payload.utf8.count),
+            allocatedSize: 0,
+            isDataless: true,
+            isUploaded: true,
+            isUploading: false,
+            isDownloading: false,
+            hasConflicts: false,
+            syncStatus: .cloudOnly,
+            kind: .other,
+            modificationDate: Date(),
+            creationDate: Date(),
+            lastAccessDate: Date()
+        )
+
+        // Verify mixed (1 downloaded + 1 cloud-only) group is detected by Size + Name with unverified flag
+        let groups = await DuplicateService.shared.findDuplicates(
+            items: [item1Downloaded, item2CloudOnly],
+            minimumFileSize: 16,
+            includeCloudOnlyByNameAndSize: true
+        )
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertFalse(groups[0].isVerifiedFullHash)
+        XCTAssertEqual(groups[0].primaryItem?.id, item1Downloaded.id, "Should prefer downloaded copy as default primary")
+
+        // Now resolve by relocating the Primary into `canonicalDir` and linking both Project1 and Project2 to it!
+        let report = await DuplicateService.shared.resolveDuplicates(
+            groups: groups,
+            strategy: .symlink,
+            useRelativeSymlinksWhenSameSource: true,
+            relocatePrimaryToDirectory: canonicalDir
+        )
+        XCTAssertEqual(report.groupsResolved, 1)
+        XCTAssertEqual(report.duplicatesReplaced, 1)
+
+        let canonicalFile = canonicalDir.appendingPathComponent("shared_model.bin")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canonicalFile.path))
+
+        // Both original paths (Project1/shared_model.bin and Project2/shared_model.bin) should now be symlinks to SharedCanonicalAssets/shared_model.bin!
+        let dest1 = try FileManager.default.destinationOfSymbolicLink(atPath: file1.path)
+        let dest2 = try FileManager.default.destinationOfSymbolicLink(atPath: file2.path)
+        XCTAssertEqual(dest1, "../SharedCanonicalAssets/shared_model.bin")
+        XCTAssertEqual(dest2, "../SharedCanonicalAssets/shared_model.bin")
+        XCTAssertEqual(try String(contentsOf: file1, encoding: .utf8), payload)
+        XCTAssertEqual(try String(contentsOf: file2, encoding: .utf8), payload)
+    }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DuplicateResolveSheet: View {
     @ObservedObject var viewModel: AppViewModel
@@ -11,16 +12,20 @@ struct DuplicateResolveSheet: View {
         viewModel.pendingDuplicateGroups.reduce(0) { $0 + $1.reclaimableLocalBytes }
     }
 
+    private var totalCloudBytesFreed: Int64 {
+        viewModel.pendingDuplicateGroups.reduce(0) { $0 + $1.redundantLogicalBytes }
+    }
+
     private var warnings: [DuplicatePlatformWarning] {
         viewModel.currentDuplicateWarnings()
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             // Header
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 Image(systemName: viewModel.selectedResolutionStrategy.icon)
-                    .font(.system(size: 38))
+                    .font(.system(size: 34))
                     .foregroundColor(viewModel.selectedResolutionStrategy == .trashDuplicates ? .red : .purple)
 
                 Text("Resolve Duplicate Files")
@@ -31,11 +36,70 @@ struct DuplicateResolveSheet: View {
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 500)
+                    .frame(maxWidth: 520)
             }
 
-            // Strategy Picker
+            // Primary Relocation Option ("Move Primary to a new folder of choice and link everything from there")
             VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $viewModel.relocatePrimaryToCustomFolder) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Move Primary file(s) to a canonical folder and link all locations to it")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Text("Moves the Primary copy into your chosen folder and places links at both the Primary's original path and all duplicate paths.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .toggleStyle(.checkbox)
+
+                if viewModel.relocatePrimaryToCustomFolder {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.fill.badge.gearshape")
+                            .foregroundColor(.purple)
+
+                        if let destURL = viewModel.relocatedPrimaryDirectoryURL {
+                            Text(destURL.path)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(destURL.path)
+                        } else {
+                            Text("No destination folder selected...")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+
+                        Spacer()
+
+                        Button(action: selectCanonicalDestinationFolder) {
+                            Label(viewModel.relocatedPrimaryDirectoryURL == nil ? "Choose Folder..." : "Change Folder...", systemImage: "folder.badge.plus")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.purple.opacity(0.08))
+                    )
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.5)
+                    )
+            )
+
+            // Strategy Picker
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Link / Resolution Method:")
                     .font(.caption)
                     .fontWeight(.semibold)
@@ -69,7 +133,7 @@ struct DuplicateResolveSheet: View {
                             }
                             Spacer()
                         }
-                        .padding(10)
+                        .padding(8)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(isSelected ? Color.purple.opacity(0.10) : Color(nsColor: .controlBackgroundColor))
@@ -83,13 +147,13 @@ struct DuplicateResolveSheet: View {
                 }
 
                 if viewModel.selectedResolutionStrategy == .symlink {
-                    Toggle("Use relative symlink paths (e.g. `../shared/file`) when Primary and Duplicate are in the same source", isOn: $viewModel.useRelativeSymlinks)
+                    Toggle("Use relative symlink paths (e.g. `../shared/file`) when possible", isOn: $viewModel.useRelativeSymlinks)
                         .toggleStyle(.checkbox)
                         .font(.caption)
                         .padding(.top, 2)
                 }
             }
-            .frame(maxWidth: 540)
+            .frame(maxWidth: 560)
 
             // Platform & Cloud Compatibility Warnings
             if !warnings.isEmpty {
@@ -114,7 +178,7 @@ struct DuplicateResolveSheet: View {
                             }
                             Spacer()
                         }
-                        .padding(9)
+                        .padding(8)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(warningColor(warning.severity).opacity(0.10))
@@ -125,13 +189,13 @@ struct DuplicateResolveSheet: View {
                         )
                     }
                 }
-                .frame(maxWidth: 540)
+                .frame(maxWidth: 560)
             }
 
             // Metrics Summary Box
-            HStack(spacing: 24) {
+            HStack(spacing: 22) {
                 VStack(spacing: 2) {
-                    Text("Local Space Freed")
+                    Text("Local Mac Freed")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(ByteFormatter.string(fromByteCount: totalLocalBytesFreed))
@@ -140,7 +204,19 @@ struct DuplicateResolveSheet: View {
                         .foregroundColor(.green)
                 }
 
-                Divider().frame(height: 32)
+                Divider().frame(height: 30)
+
+                VStack(spacing: 2) {
+                    Text("Cloud / Logical Saved")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(ByteFormatter.string(fromByteCount: totalCloudBytesFreed))
+                        .font(.title3)
+                        .fontWeight(.bold)
+                        .foregroundColor(.blue)
+                }
+
+                Divider().frame(height: 30)
 
                 VStack(spacing: 2) {
                     Text("Duplicates Replaced")
@@ -150,21 +226,9 @@ struct DuplicateResolveSheet: View {
                         .font(.title3)
                         .fontWeight(.bold)
                 }
-
-                Divider().frame(height: 32)
-
-                VStack(spacing: 2) {
-                    Text("Primary Copies Kept")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("\(viewModel.pendingDuplicateGroups.count.formatted()) (100% Intact)")
-                        .font(.title3)
-                        .fontWeight(.bold)
-                        .foregroundColor(.blue)
-                }
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 10)
                     .fill(Color(nsColor: .controlBackgroundColor))
@@ -181,17 +245,47 @@ struct DuplicateResolveSheet: View {
                         ForEach(viewModel.pendingDuplicateGroups.prefix(25)) { group in
                             if let primary = group.primaryItem {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.green)
-                                            .font(.caption2)
-                                        Text("PRIMARY:")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(.green)
-                                        Text("[\(viewModel.providerName(for: primary.providerId))] \(primary.relativePath)")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                            .lineLimit(1)
+                                    if viewModel.relocatePrimaryToCustomFolder, let destDir = viewModel.relocatedPrimaryDirectoryURL {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "folder.fill.badge.plus")
+                                                .foregroundColor(.green)
+                                                .font(.caption2)
+                                            Text("NEW PRIMARY:")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.green)
+                                            Text(destDir.appendingPathComponent(primary.name).path)
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "arrow.turn.down.right")
+                                                .foregroundColor(.purple)
+                                                .font(.caption2)
+                                            Text("LINK AT OLD PRIMARY:")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.purple)
+                                            Text("[\(viewModel.providerName(for: primary.providerId))] \(primary.relativePath)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        .padding(.leading, 14)
+                                    } else {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.green)
+                                                .font(.caption2)
+                                            Text("PRIMARY:")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.green)
+                                            Text("[\(viewModel.providerName(for: primary.providerId))] \(primary.relativePath)")
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .lineLimit(1)
+                                        }
                                     }
 
                                     ForEach(group.duplicateItems) { dup in
@@ -218,13 +312,13 @@ struct DuplicateResolveSheet: View {
                     }
                     .padding(4)
                 }
-                .frame(maxHeight: 120)
+                .frame(maxHeight: 110)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
                 )
             }
-            .frame(maxWidth: 540)
+            .frame(maxWidth: 560)
 
             // Action Buttons
             HStack(spacing: 12) {
@@ -238,18 +332,35 @@ struct DuplicateResolveSheet: View {
                 }) {
                     HStack(spacing: 6) {
                         Image(systemName: viewModel.selectedResolutionStrategy.icon)
-                        Text("Replace \(totalDuplicatesToReplace) \(totalDuplicatesToReplace == 1 ? "Duplicate" : "Duplicates") with \(viewModel.selectedResolutionStrategy.shortTitle)")
+                        Text(viewModel.relocatePrimaryToCustomFolder
+                            ? "Move Primary & Link All (\(totalDuplicatesToReplace + viewModel.pendingDuplicateGroups.count) Locations)"
+                            : "Replace \(totalDuplicatesToReplace) \(totalDuplicatesToReplace == 1 ? "Duplicate" : "Duplicates") with \(viewModel.selectedResolutionStrategy.shortTitle)")
                     }
                     .fontWeight(.semibold)
                     .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(viewModel.selectedResolutionStrategy == .trashDuplicates ? .red : .purple)
+                .disabled(viewModel.relocatePrimaryToCustomFolder && viewModel.relocatedPrimaryDirectoryURL == nil)
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24)
-        .frame(width: 600)
+        .padding(22)
+        .frame(width: 620)
+    }
+
+    private func selectCanonicalDestinationFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select Canonical Folder"
+        panel.message = "Choose a folder where Primary files will be moved (all original locations will be linked to it)."
+
+        if panel.runModal() == .OK, let url = panel.url {
+            viewModel.relocatedPrimaryDirectoryURL = url
+        }
     }
 
     private func warningIcon(_ severity: DuplicatePlatformWarning.Severity) -> String {

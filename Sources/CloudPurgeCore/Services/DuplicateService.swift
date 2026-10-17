@@ -130,6 +130,7 @@ public struct DuplicateResolutionReport: Sendable {
     public let groupsResolved: Int
     public let duplicatesReplaced: Int
     public let localBytesReclaimed: Int64
+    public let cloudBytesReclaimed: Int64
     public let failedItems: [(path: String, reason: String)]
     public let resolvedDuplicateIds: Set<UUID>
 }
@@ -150,8 +151,12 @@ public final class DuplicateService: Sendable {
         var targetProviderTypes = Set<ProviderType>()
         var hasCrossProviderLink = false
         var hasDatalessPrimary = false
+        var unverifiedCloudGroupCount = 0
 
         for group in groups {
+            if !group.isVerifiedFullHash {
+                unverifiedCloudGroupCount += 1
+            }
             guard let primary = group.primaryItem else { continue }
             if primary.isDataless {
                 hasDatalessPrimary = true
@@ -165,6 +170,14 @@ public final class DuplicateService: Sendable {
                     }
                 }
             }
+        }
+
+        if unverifiedCloudGroupCount > 0 {
+            warnings.append(DuplicatePlatformWarning(
+                severity: .caution,
+                title: "Contains Undownloaded Cloud-Only Files (Matched by Exact Size + Filename)",
+                message: "\(unverifiedCloudGroupCount) \(unverifiedCloudGroupCount == 1 ? "group includes" : "groups include") cloud-only (evicted) files that were matched by exact byte size + filename without downloading their contents. Please verify paths before replacing or deleting."
+            ))
         }
 
         switch strategy {
@@ -253,11 +266,12 @@ public final class DuplicateService: Sendable {
     /// Scans the given items for exact content duplicates using a 3-stage pipeline:
     /// Stage 1: Exact `fileSize` grouping (O(N), zero disk I/O).
     /// Stage 2: Fast 64 KB head+tail SHA-256 fingerprint on local downloaded files of identical size.
-    /// Stage 3: Full streaming SHA-256 verification on remaining candidates.
+    /// Stage 3: Full streaming SHA-256 verification on remaining downloaded candidates, plus Cloud-Only (or Mixed Local+Cloud)
+    ///          exact `fileSize + filename` matching so undownloaded cloud files can also be deduplicated without downloading them.
     public func findDuplicates(
         items: [CloudItem],
         minimumFileSize: Int64 = 1024, // Default >= 1 KB
-        includeCloudOnlyByNameAndSize: Bool = false,
+        includeCloudOnlyByNameAndSize: Bool = true,
         control: ScanSessionControl? = nil,
         onProgress: (@Sendable (DuplicateScanProgress) -> Void)? = nil
     ) async -> [DuplicateGroup] {
@@ -296,8 +310,12 @@ public final class DuplicateService: Sendable {
                 return []
             }
 
-            // Stage 2: Partial 64KB (32KB head + 32KB tail) hash for downloaded files
+            // Stage 2: Partial 64KB (32KB head + 32KB tail) hash for downloaded files;
+            //          Collect cloud-only items by (fileSize, normalizedName) so they can attach to matching downloaded groups
+            //          OR form pure/mixed Cloud Name+Size duplicate groups without triggering any cloud downloads.
             var partialBuckets: [String: [CloudItem]] = [:]
+            var cloudOnlyBySizeAndName: [String: [CloudItem]] = [:]
+            var downloadedBySizeAndName: [String: [CloudItem]] = [:]
             var processed = 0
             var lastProgressTime = CFAbsoluteTimeGetCurrent()
 
@@ -307,13 +325,15 @@ public final class DuplicateService: Sendable {
 
                 for item in bucket {
                     processed += 1
+                    let sizeNameKey = "\(item.fileSize):\(item.name.lowercased())"
                     if item.isDataless {
-                        // Cloud-only fallback (when opted in): group by size + exact filename without triggering download
-                        let key = "cloudonly:\(item.fileSize):\(item.name.lowercased())"
-                        partialBuckets[key, default: []].append(item)
-                    } else if let partialHash = Self.computePartialHash(path: item.path, fileSize: item.fileSize) {
-                        let key = "partial:\(item.fileSize):\(partialHash)"
-                        partialBuckets[key, default: []].append(item)
+                        cloudOnlyBySizeAndName[sizeNameKey, default: []].append(item)
+                    } else {
+                        downloadedBySizeAndName[sizeNameKey, default: []].append(item)
+                        if let partialHash = Self.computePartialHash(path: item.path, fileSize: item.fileSize) {
+                            let key = "partial:\(item.fileSize):\(partialHash)"
+                            partialBuckets[key, default: []].append(item)
+                        }
                     }
 
                     let now = CFAbsoluteTimeGetCurrent()
@@ -333,43 +353,48 @@ public final class DuplicateService: Sendable {
             let candidatePartialGroups = partialBuckets.filter { $0.value.count > 1 }
             let fullHashTotal = candidatePartialGroups.values.reduce(0) { $0 + $1.count }
 
-            // Stage 3: Full SHA-256 verification on files that matched size + head/tail sample
+            // Stage 3: Full SHA-256 verification on downloaded files that matched size + head/tail sample
             var verifiedGroups: [DuplicateGroup] = []
             var fullProcessed = 0
             var runningRedundantBytes: Int64 = 0
+            var assignedItemIds = Set<UUID>()
 
             for (partialKey, groupItems) in candidatePartialGroups {
                 if (control?.isStopped ?? false) || Task.isCancelled { break }
                 if let ctrl = control, !ctrl.waitIfPaused() { break }
 
-                if partialKey.hasPrefix("cloudonly:") {
-                    let sorted = Self.sortDefaultPrimaryFirst(groupItems)
-                    let group = DuplicateGroup(
-                        id: partialKey,
-                        contentHash: "Unverified (Cloud-Only Size+Name Match)",
-                        fileSize: sorted[0].fileSize,
-                        items: sorted,
-                        primaryItemId: sorted[0].id,
-                        isVerifiedFullHash: false
-                    )
-                    verifiedGroups.append(group)
-                    runningRedundantBytes += group.redundantLogicalBytes
-                    fullProcessed += groupItems.count
-                    continue
-                }
-
-                // If fileSize <= 64 KB, the partial hash already read 100% of the file!
                 let sampleSize = groupItems[0].fileSize
+                // If fileSize <= 64 KB, the partial hash already read 100% of the file!
                 if sampleSize <= Int64(Self.sampleChunkSize * 2) {
                     let hashHex = String(partialKey.split(separator: ":").last ?? "")
-                    let sorted = Self.sortDefaultPrimaryFirst(groupItems)
+                    var combinedItems = groupItems
+                    var hasCloudOnlyAttached = false
+
+                    if includeCloudOnlyByNameAndSize {
+                        let namesInGroup = Set(groupItems.map { "\(sampleSize):\($0.name.lowercased())" })
+                        for snKey in namesInGroup {
+                            if let cloudMatches = cloudOnlyBySizeAndName[snKey] {
+                                for cItem in cloudMatches where !assignedItemIds.contains(cItem.id) {
+                                    combinedItems.append(cItem)
+                                    assignedItemIds.insert(cItem.id)
+                                    hasCloudOnlyAttached = true
+                                }
+                            }
+                        }
+                    }
+
+                    for dItem in groupItems {
+                        assignedItemIds.insert(dItem.id)
+                    }
+
+                    let sorted = Self.sortDefaultPrimaryFirst(combinedItems)
                     let group = DuplicateGroup(
                         id: "sha256:\(sampleSize):\(hashHex)",
-                        contentHash: hashHex,
+                        contentHash: hasCloudOnlyAttached ? "\(hashHex) (+ Cloud Size+Name Match)" : hashHex,
                         fileSize: sampleSize,
                         items: sorted,
                         primaryItemId: sorted[0].id,
-                        isVerifiedFullHash: true
+                        isVerifiedFullHash: !hasCloudOnlyAttached
                     )
                     verifiedGroups.append(group)
                     runningRedundantBytes += group.redundantLogicalBytes
@@ -401,17 +426,71 @@ public final class DuplicateService: Sendable {
                 }
 
                 for (fullHash, matched) in byFullHash where matched.count > 1 {
-                    let sorted = Self.sortDefaultPrimaryFirst(matched)
+                    var combinedItems = matched
+                    var hasCloudOnlyAttached = false
+
+                    if includeCloudOnlyByNameAndSize {
+                        let namesInGroup = Set(matched.map { "\(sampleSize):\($0.name.lowercased())" })
+                        for snKey in namesInGroup {
+                            if let cloudMatches = cloudOnlyBySizeAndName[snKey] {
+                                for cItem in cloudMatches where !assignedItemIds.contains(cItem.id) {
+                                    combinedItems.append(cItem)
+                                    assignedItemIds.insert(cItem.id)
+                                    hasCloudOnlyAttached = true
+                                }
+                            }
+                        }
+                    }
+
+                    for dItem in matched {
+                        assignedItemIds.insert(dItem.id)
+                    }
+
+                    let sorted = Self.sortDefaultPrimaryFirst(combinedItems)
                     let group = DuplicateGroup(
                         id: "sha256:\(sampleSize):\(fullHash)",
-                        contentHash: fullHash,
+                        contentHash: hasCloudOnlyAttached ? "\(fullHash) (+ Cloud Size+Name Match)" : fullHash,
                         fileSize: sampleSize,
                         items: sorted,
                         primaryItemId: sorted[0].id,
-                        isVerifiedFullHash: true
+                        isVerifiedFullHash: !hasCloudOnlyAttached
                     )
                     verifiedGroups.append(group)
                     runningRedundantBytes += group.redundantLogicalBytes
+                }
+            }
+
+            // Stage 4: Form Cloud-Only (and Mixed 1-Downloaded + Cloud-Only) duplicate groups by exact Size + Filename
+            if includeCloudOnlyByNameAndSize {
+                for (snKey, cloudItems) in cloudOnlyBySizeAndName {
+                    if (control?.isStopped ?? false) || Task.isCancelled { break }
+                    var unassignedCloud = cloudItems.filter { !assignedItemIds.contains($0.id) }
+                    guard !unassignedCloud.isEmpty else { continue }
+
+                    // Also include any downloaded item with the exact same size + filename that wasn't already part of a multi-downloaded group
+                    if let localMatches = downloadedBySizeAndName[snKey] {
+                        for lItem in localMatches where !assignedItemIds.contains(lItem.id) {
+                            unassignedCloud.append(lItem)
+                            assignedItemIds.insert(lItem.id)
+                        }
+                    }
+
+                    if unassignedCloud.count > 1 {
+                        for item in unassignedCloud {
+                            assignedItemIds.insert(item.id)
+                        }
+                        let sorted = Self.sortDefaultPrimaryFirst(unassignedCloud)
+                        let group = DuplicateGroup(
+                            id: "cloudonly:\(snKey)",
+                            contentHash: "Unverified (Cloud Size + Filename Match)",
+                            fileSize: sorted[0].fileSize,
+                            items: sorted,
+                            primaryItemId: sorted[0].id,
+                            isVerifiedFullHash: false
+                        )
+                        verifiedGroups.append(group)
+                        runningRedundantBytes += group.redundantLogicalBytes
+                    }
                 }
             }
 
@@ -526,12 +605,14 @@ public final class DuplicateService: Sendable {
     // MARK: - Safe Resolution (Symlink, Finder Alias, APFS Clone, or Trash)
 
     /// Resolves the given duplicate groups by replacing non-primary copies with a link/clone to each group's chosen Primary file.
-    /// Uses a safe atomic staging pattern: backs up the duplicate to a temporary sibling path first, creates the link/clone,
-    /// and restores the original file if link creation fails so data is NEVER lost.
+    /// If `relocatePrimaryToDirectory` is provided, first moves the Primary file into that canonical destination folder,
+    /// places a link at the Primary's original location pointing to the new canonical file, and links all duplicates to the new canonical file!
+    /// Uses a safe atomic staging pattern: backs up files before replacing and restores on error so data is NEVER lost.
     public func resolveDuplicates(
         groups: [DuplicateGroup],
         strategy: DuplicateResolutionStrategy,
         useRelativeSymlinksWhenSameSource: Bool = true,
+        relocatePrimaryToDirectory: URL? = nil,
         control: ScanSessionControl? = nil
     ) async -> DuplicateResolutionReport {
         return await Task.detached(priority: .userInitiated) {
@@ -539,32 +620,80 @@ public final class DuplicateService: Sendable {
             var groupsResolved = 0
             var duplicatesReplaced = 0
             var localBytesReclaimed: Int64 = 0
+            var cloudBytesReclaimed: Int64 = 0
             var failedItems: [(path: String, reason: String)] = []
             var resolvedIds = Set<UUID>()
+
+            if let destDir = relocatePrimaryToDirectory {
+                try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+            }
 
             for group in groups {
                 if (control?.isStopped ?? false) || Task.isCancelled { break }
                 if let ctrl = control, !ctrl.waitIfPaused() { break }
 
                 guard let primary = group.primaryItem else { continue }
-                let primaryURL = URL(fileURLWithPath: primary.path)
+                let originalPrimaryURL = URL(fileURLWithPath: primary.path)
 
                 guard fm.fileExists(atPath: primary.path) else {
                     failedItems.append((path: primary.path, reason: "Primary file no longer exists on disk."))
                     continue
                 }
 
-                var anyReplacedInGroup = false
+                // Step 1: Optionally relocate the Primary copy into the user's chosen canonical destination folder
+                var effectivePrimaryURL = originalPrimaryURL
+                var relocatedPrimaryFromOriginal = false
 
+                if let destDir = relocatePrimaryToDirectory {
+                    let targetURL = Self.uniqueDestinationURL(in: destDir, fileName: originalPrimaryURL.lastPathComponent, existingPrimaryURL: originalPrimaryURL)
+                    if targetURL.standardizedFileURL.path != originalPrimaryURL.standardizedFileURL.path {
+                        do {
+                            try fm.moveItem(at: originalPrimaryURL, to: targetURL)
+                            effectivePrimaryURL = targetURL
+                            relocatedPrimaryFromOriginal = true
+
+                            // Leave a link at the Primary's original location pointing to the new canonical location
+                            // (For `.trashDuplicates`, we still leave a Finder Alias or Symlink at the old primary location if requested,
+                            // or if strategy is a link/clone strategy, use that exact strategy!)
+                            let primaryLinkStrategy: DuplicateResolutionStrategy = (strategy == .trashDuplicates) ? .symlink : strategy
+                            do {
+                                try Self.createLinkAtEmptySlot(
+                                    slotURL: originalPrimaryURL,
+                                    targetPrimaryURL: effectivePrimaryURL,
+                                    strategy: primaryLinkStrategy,
+                                    useRelativePath: useRelativeSymlinksWhenSameSource
+                                )
+                            } catch {
+                                // Rollback move if linking the primary's original slot failed
+                                try? fm.moveItem(at: effectivePrimaryURL, to: originalPrimaryURL)
+                                effectivePrimaryURL = originalPrimaryURL
+                                relocatedPrimaryFromOriginal = false
+                                failedItems.append((path: primary.path, reason: "Failed to link original primary path after moving: \(error.localizedDescription)"))
+                                continue
+                            }
+                        } catch {
+                            failedItems.append((path: primary.path, reason: "Failed to move primary to destination folder: \(error.localizedDescription)"))
+                            continue
+                        }
+                    }
+                }
+
+                var anyReplacedInGroup = relocatedPrimaryFromOriginal
+
+                // Step 2: Replace all non-primary duplicate copies with links/clones pointing to `effectivePrimaryURL`
                 for dup in group.duplicateItems {
                     if (control?.isStopped ?? false) || Task.isCancelled { break }
-                    if dup.path == primary.path { continue }
+                    if dup.path == effectivePrimaryURL.path { continue }
 
                     let dupURL = URL(fileURLWithPath: dup.path)
                     guard fm.fileExists(atPath: dup.path) else {
                         failedItems.append((path: dup.path, reason: "Duplicate file not found."))
                         continue
                     }
+
+                    let canUseRelative = useRelativeSymlinksWhenSameSource && (
+                        relocatePrimaryToDirectory != nil || dup.providerId == primary.providerId
+                    )
 
                     do {
                         switch strategy {
@@ -574,25 +703,26 @@ public final class DuplicateService: Sendable {
                         case .symlink:
                             try Self.replaceWithSymlinkAtomically(
                                 duplicateURL: dupURL,
-                                primaryURL: primaryURL,
-                                useRelativePath: useRelativeSymlinksWhenSameSource && (dup.providerId == primary.providerId)
+                                primaryURL: effectivePrimaryURL,
+                                useRelativePath: canUseRelative
                             )
 
                         case .macOSAlias:
                             try Self.replaceWithFinderAliasAtomically(
                                 duplicateURL: dupURL,
-                                primaryURL: primaryURL
+                                primaryURL: effectivePrimaryURL
                             )
 
                         case .apfsClone:
                             try Self.replaceWithAPFSCloneAtomically(
                                 duplicateURL: dupURL,
-                                primaryURL: primaryURL
+                                primaryURL: effectivePrimaryURL
                             )
                         }
 
                         duplicatesReplaced += 1
                         localBytesReclaimed += dup.allocatedSize
+                        cloudBytesReclaimed += dup.fileSize
                         resolvedIds.insert(dup.id)
                         anyReplacedInGroup = true
                     } catch {
@@ -610,10 +740,74 @@ public final class DuplicateService: Sendable {
                 groupsResolved: groupsResolved,
                 duplicatesReplaced: duplicatesReplaced,
                 localBytesReclaimed: localBytesReclaimed,
+                cloudBytesReclaimed: cloudBytesReclaimed,
                 failedItems: failedItems,
                 resolvedDuplicateIds: resolvedIds
             )
         }.value
+    }
+
+    /// Computes a collision-free destination URL inside `directory` (e.g. `report.pdf`, `report (2).pdf`).
+    private static func uniqueDestinationURL(in directory: URL, fileName: String, existingPrimaryURL: URL) -> URL {
+        let fm = FileManager.default
+        let candidate = directory.appendingPathComponent(fileName)
+        if candidate.standardizedFileURL.path == existingPrimaryURL.standardizedFileURL.path || !fm.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+
+        let ext = (fileName as NSString).pathExtension
+        let baseName = (fileName as NSString).deletingPathExtension
+        var counter = 2
+        while true {
+            let numberedName = ext.isEmpty ? "\(baseName) (\(counter))" : "\(baseName) (\(counter)).\(ext)"
+            let numberedURL = directory.appendingPathComponent(numberedName)
+            if !fm.fileExists(atPath: numberedURL.path) {
+                return numberedURL
+            }
+            counter += 1
+        }
+    }
+
+    /// Creates a Symlink, Finder Alias, or APFS Clone at `slotURL` (where the Primary file used to live before relocation).
+    private static func createLinkAtEmptySlot(
+        slotURL: URL,
+        targetPrimaryURL: URL,
+        strategy: DuplicateResolutionStrategy,
+        useRelativePath: Bool
+    ) throws {
+        let fm = FileManager.default
+        let parentDir = slotURL.deletingLastPathComponent()
+
+        switch strategy {
+        case .symlink, .trashDuplicates:
+            let destPath = useRelativePath
+                ? Self.relativePath(fromDirectory: parentDir.standardizedFileURL.path, toFile: targetPrimaryURL.standardizedFileURL.path)
+                : targetPrimaryURL.path
+            try fm.createSymbolicLink(atPath: slotURL.path, withDestinationPath: destPath)
+
+        case .macOSAlias:
+            let bookmarkData = try targetPrimaryURL.bookmarkData(
+                options: [.suitableForBookmarkFile],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            try URL.writeBookmarkData(bookmarkData, to: slotURL)
+
+        case .apfsClone:
+            let rc = targetPrimaryURL.path.withCString { srcPtr in
+                slotURL.path.withCString { dstPtr in
+                    Darwin.clonefile(srcPtr, dstPtr, 0)
+                }
+            }
+            if rc != 0 {
+                let errCode = errno
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(errCode),
+                    userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errCode))]
+                )
+            }
+        }
     }
 
     private static func replaceWithSymlinkAtomically(

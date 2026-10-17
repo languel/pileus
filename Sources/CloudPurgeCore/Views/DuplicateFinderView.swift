@@ -257,20 +257,31 @@ struct DuplicateGroupCard: View {
                     .foregroundColor(.green)
                     .help("SHA-256: \(group.contentHash)")
                 } else {
-                    Text("Cloud Name+Size Match")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.orange.opacity(0.14)))
-                        .foregroundColor(.orange)
+                    HStack(spacing: 3) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text("Cloud Size+Name Match")
+                    }
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.orange.opacity(0.14)))
+                    .foregroundColor(.orange)
+                    .help("Matched by exact byte size and filename without downloading cloud-only files.")
                 }
 
                 Spacer()
 
-                Text("Saves \(ByteFormatter.string(fromByteCount: group.reclaimableLocalBytes)) local")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.green)
+                if group.reclaimableLocalBytes > 0 {
+                    Text("Saves \(ByteFormatter.string(fromByteCount: group.reclaimableLocalBytes)) local (\(ByteFormatter.string(fromByteCount: group.redundantLogicalBytes)) cloud)")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.green)
+                } else {
+                    Text("Saves \(ByteFormatter.string(fromByteCount: group.redundantLogicalBytes)) cloud")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.blue)
+                }
 
                 Button(action: {
                     viewModel.promptResolveDuplicateGroup(group)

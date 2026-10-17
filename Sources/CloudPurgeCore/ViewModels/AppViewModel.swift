@@ -95,7 +95,7 @@ public final class AppViewModel: ObservableObject {
     @Published public var duplicateScanTotal: Int = 0
     @Published public var duplicateScanScope: DuplicateScanScope = .currentSource
     @Published public var duplicateMinSizeBytes: Int64 = 10 * 1024 // Default >= 10 KB
-    @Published public var duplicateIncludeCloudOnly: Bool = false
+    @Published public var duplicateIncludeCloudOnly: Bool = true
     @Published public var selectedDuplicateGroupIds = Set<String>()
 
     // Duplicate Resolution Sheet State
@@ -103,6 +103,8 @@ public final class AppViewModel: ObservableObject {
     @Published public var pendingDuplicateGroups: [DuplicateGroup] = []
     @Published public var selectedResolutionStrategy: DuplicateResolutionStrategy = .symlink
     @Published public var useRelativeSymlinks: Bool = true
+    @Published public var relocatePrimaryToCustomFolder: Bool = false
+    @Published public var relocatedPrimaryDirectoryURL: URL? = nil
     @Published public var lastDuplicateReport: DuplicateResolutionReport?
     @Published public var showDuplicateReportAlert: Bool = false
 
@@ -1257,6 +1259,13 @@ public final class AppViewModel: ObservableObject {
     }
 
     public func executeConfirmedDuplicateResolution() {
+        let relocateDir: URL? = relocatePrimaryToCustomFolder ? relocatedPrimaryDirectoryURL : nil
+        if relocatePrimaryToCustomFolder && relocateDir == nil {
+            errorMessage = "Please choose a destination folder to move the Primary file(s) into."
+            showErrorAlert = true
+            return
+        }
+
         showDuplicateResolveSheet = false
         let groupsToResolve = pendingDuplicateGroups
         let strategy = selectedResolutionStrategy
@@ -1278,6 +1287,7 @@ public final class AppViewModel: ObservableObject {
                 groups: groupsToResolve,
                 strategy: strategy,
                 useRelativeSymlinksWhenSameSource: relativeSymlinks,
+                relocatePrimaryToDirectory: relocateDir,
                 control: control
             )
 
@@ -1287,7 +1297,7 @@ public final class AppViewModel: ObservableObject {
             self.lastDuplicateReport = report
             self.showDuplicateReportAlert = true
 
-            if !report.resolvedDuplicateIds.isEmpty {
+            if !report.resolvedDuplicateIds.isEmpty || report.groupsResolved > 0 {
                 // Remove resolved duplicate items from duplicateGroups
                 var updatedGroups: [DuplicateGroup] = []
                 for var group in self.duplicateGroups {
