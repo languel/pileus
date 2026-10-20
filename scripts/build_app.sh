@@ -8,6 +8,7 @@ APP_NAME="Pileus"
 BUILD_DIR=".build/release"
 APP_BUNDLE="${APP_NAME}.app"
 BUNDLE_ID="${BUNDLE_ID:-com.languel.pileus}"
+VERSION="${APP_VERSION:-0.1.0}"
 
 echo "Building ${APP_NAME} in release mode..."
 swift build -c release
@@ -49,7 +50,7 @@ cat << PLIST > "${APP_BUNDLE}/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
