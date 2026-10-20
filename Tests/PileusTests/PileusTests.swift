@@ -1,8 +1,8 @@
 import XCTest
 import Foundation
-@testable import CloudPurgeCore
+@testable import PileusCore
 
-final class CloudPurgeTests: XCTestCase {
+final class PileusTests: XCTestCase {
 
     func testByteFormatter() {
         XCTAssertEqual(ByteFormatter.string(fromByteCount: 0), "0 B")
@@ -154,7 +154,7 @@ final class CloudPurgeTests: XCTestCase {
     }
 
     func testCloudScannerOnSampleDirectory() async throws {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("CloudPurgeTest_\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("PileusTest_\(UUID().uuidString)")
         let subDir = tempDir.appendingPathComponent("Subfolder")
         try FileManager.default.createDirectory(at: subDir, withIntermediateDirectories: true)
 
@@ -231,7 +231,7 @@ final class CloudPurgeTests: XCTestCase {
     }
 
     func testScanSessionControlPauseAndResumePreservesData() async throws {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("CloudPurgePauseTest_\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("PileusPauseTest_\(UUID().uuidString)")
         let subDir = tempDir.appendingPathComponent("FolderA")
         try FileManager.default.createDirectory(at: subDir, withIntermediateDirectories: true)
 

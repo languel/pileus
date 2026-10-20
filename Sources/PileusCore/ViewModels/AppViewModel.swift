@@ -44,7 +44,8 @@ public struct ProviderScanState: Sendable {
 @MainActor
 public final class AppViewModel: ObservableObject {
     public static let defaultDisplayLimit = 500
-    private static let customFoldersDefaultsKey = "CloudPurge.CustomFolderPaths"
+    private static let customFoldersDefaultsKey = "Pileus.CustomFolderPaths"
+    private static let legacyCustomFoldersDefaultsKey = "CloudPurge.CustomFolderPaths"
 
     @Published public var providers: [CloudProvider] = []
     @Published public var selectedProvider: CloudProvider?
@@ -233,7 +234,9 @@ public final class AppViewModel: ObservableObject {
         }
 
         // Restore persisted custom folders from UserDefaults and currently loaded custom folders
-        let savedCustomPaths = UserDefaults.standard.stringArray(forKey: Self.customFoldersDefaultsKey) ?? []
+        let savedCustomPaths = UserDefaults.standard.stringArray(forKey: Self.customFoldersDefaultsKey)
+            ?? UserDefaults.standard.stringArray(forKey: Self.legacyCustomFoldersDefaultsKey)
+            ?? []
         for path in savedCustomPaths {
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.fileExists(atPath: path) else { continue }

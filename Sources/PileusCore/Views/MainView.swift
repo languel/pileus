@@ -123,7 +123,7 @@ public struct MainView: View {
         } message: {
             Text(viewModel.errorMessage ?? "An error occurred.")
         }
-        .navigationTitle(viewModel.selectedProvider?.name ?? "CloudPurge")
+        .navigationTitle(viewModel.selectedProvider?.name ?? "Pileus")
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
                 if viewModel.isScanning {

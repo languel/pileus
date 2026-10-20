@@ -1,119 +1,135 @@
-# CloudPurge ☁️✨
-### Simple & Clean Cloud Storage Disk Reclaimer for macOS
+<p align="center">
+  <img src="Resources/pileus-1024.png" width="120" height="120" alt="Pileus App Icon" style="border-radius: 26px;" />
+</p>
 
-**CloudPurge** is a native macOS application designed to track, inspect, and reclaim disk space from cloud storage services like **iCloud Drive** and **Google Drive** (as well as OneDrive, Dropbox, and custom cloud folders).
+<h1 align="center">Pileus ☁️</h1>
 
-Finder offers "Remove Download" on a single file context menu, but provides no way to sort files across your entire cloud drive by size, inspect which directories are hogging disk space, or recursively remove downloads in a folder. CloudPurge solves this with a fast, modern SwiftUI interface.
+<p align="center">
+  <strong>Native macOS Cloud Storage Space Reclaimer & Duplicate Resolver</strong><br>
+  Inspect disk usage, recursively evict or delete heavy local copies (e.g. <code>node_modules</code>), and deduplicate files safely across cloud drives and local disks.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-macOS%2014%2B-blue?logo=apple" alt="Platform macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-6.0-orange?logo=swift" alt="Swift 6.0">
+  <img src="https://img.shields.io/badge/Codesign-Developer%20ID-green?logo=apple" alt="Developer ID Signed">
+  <img src="https://img.shields.io/badge/Architecture-Apple%20Silicon%20%2F%20Universal-purple" alt="Apple Silicon">
+  <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License">
+</p>
 
 ---
 
-## ✨ Features
+## 📖 Overview
 
-- **Automatic Cloud Provider Detection**:
-  - **iCloud Drive** (`~/Library/Mobile Documents/com~apple~CloudDocs`)
-  - **Google Drive** (`~/Library/CloudStorage/GoogleDrive-...`)
-  - **OneDrive**, **Dropbox**, **Box** via macOS unified FileProvider architecture
-  - **Custom Folder Selector**: Pick or drag-and-drop any cloud-backed directory.
+A **pileus** (Latin for *cap*) is a smooth, cap-like cloud that forms above a towering cloud column. **Pileus** puts a clean cap on your cloud storage disk consumption.
 
-- **Fast & Safe Dataless Detection**:
-  - Uses native Darwin BSD `SF_DATALESS` (`0x40000000`) and block allocation inspection (`stat.st_blocks`).
-  - Scans thousands of files without triggering remote downloads or blocking your Mac.
-  - Detects files that are **Downloaded & Fully Synced** (100% safe to evict), **Cloud-Only** (0 B on disk), or **Actively Syncing / Unsynced** (eviction blocked to prevent data loss).
+macOS Finder offers a single-file "Remove Download" context menu item, but provides no built-in way to:
+- Find which directories are quietly consuming hundreds of gigabytes on your SSD.
+- Recursively evict downloads across deep trees like `node_modules`, `.venv`, or build directories.
+- Group and safely resolve duplicate files without re-downloading cloud-only stubs.
+- Choose whether duplicates should be replaced with POSIX symbolic links, native macOS Finder Aliases, APFS copy-on-write clones, moved to Trash, or relocated to a canonical folder.
 
-- **Folder Space Analyzer & Preview**:
-  - View disk space consumption per folder.
-  - Preview **exact bytes that can be saved** and **percentage of content removable** (e.g., `85.4% removable`).
-  - Visual mini-gauge bars showing local download ratio vs cloud total.
-  - **Recursive "Remove Downloads" button** directly on any folder row to reclaim entire trees at once.
+**Pileus** solves all of this with an ultra-responsive, native SwiftUI architecture powered by BSD `fts(3)` directory streaming and low-level `SF_DATALESS` file inspection.
 
-- **Advanced Sorting & Multi-Attribute Filters**:
-  - **Sort by**: Local Disk Space, Total File Size, File Name, Date Modified, or Sync Status.
-  - **Filter by Size**: Any, > 10 MB, > 50 MB, > 100 MB, > 500 MB, > 1 GB.
-  - **Filter by Age**: Any, > 7 days, > 30 days, > 90 days, > 6 months, > 1 year old.
-  - **Filter by Status**: All, Downloaded Only, Cloud-Only, Syncing.
-  - **Filter by Kind**: Videos, Audio, Images, Documents, Archives, Code / Data.
-  - **Real-time Search**: Search by file name or directory path.
+---
 
-- **Safe Eviction with Confirmation Previews**:
-  - Transparent confirmation sheet showing total space to be reclaimed, number of files, and a preview of targets.
-  - Uses native macOS `FileManager.default.evictUbiquitousItem(at:)` — local blocks are freed while cloud files and metadata stubs remain fully intact and can be reopened or redownloaded in Finder at any time.
-  - Includes built-in "Download Now" and "Reveal in Finder" actions.
+## ✨ Key Features
+
+### ☁️ Cloud & Local Storage Awareness
+- **Auto-Detection**: Instantly discovers **iCloud Drive**, **Google Drive**, **OneDrive**, **Dropbox**, and custom local folders.
+- **Smart Terminology**: Automatically detects whether a target is a cloud drive or a local directory (`isLocalOnly`). Terms like *Evict*, *Reclaim*, and *Cloud Size* adapt cleanly to *Disk Space Used*, *Size on Disk*, *Logical Size*, and *Delete*.
+- **Exclude Cloud Mounts**: Option to skip cloud storage mounts and dataless placeholder stubs when scanning parent local directories (e.g. `~`).
+
+### ⚡️ Fast, Non-Blocking Dataless Detection
+- Uses Darwin BSD `SF_DATALESS` (`0x40000000`) and filesystem block allocation inspection (`stat.st_blocks`).
+- Scans tens of thousands of items without triggering unwanted remote downloads or locking up your system.
+- Distinguishes **Downloaded & Fully Synced** files (safe to evict), **Cloud-Only Stubs** (0 bytes on local disk), and **Actively Syncing / Unsynced** files.
+
+### 📁 Folder Space Analyzer & Quick Presets
+- Tree and flat breakdown of folder disk space consumption with inline depth search.
+- One-click quick filters for heavy developer directories: `node_modules`, `.venv`, `.build`, `build`, `dist`, `__pycache__`, `Pods`, `.git`.
+- **Recursive Evict / Delete**: Evict local copies across all matching folders while preserving cloud copies, or permanently delete everywhere.
+
+### 🔍 Duplicate Finder & Safe Resolution
+- **3-Stage Non-Downloading Pipeline**:
+  1. *Stage 1*: Exact byte size grouping ($O(N)$, zero disk I/O).
+  2. *Stage 2*: 64 KB head/tail cryptographic fingerprinting on local candidates.
+  3. *Stage 3*: Full streaming SHA-256 hash verification.
+- **Cloud-Only & Mixed Deduplication**: Option to match cloud-only placeholder stubs by exact byte size and filename with clear visual warnings.
+- **Resolution Strategies**:
+  - **POSIX Symbolic Link (`ln -s`)**: Best for local drives, scripts, compilers, and CLI tools.
+  - **macOS Finder Alias / Bookmark**: Cloud-safe for iCloud Drive and Google Drive; survives target moves and renames.
+  - **APFS Copy-on-Write Clone (`clonefile`)**: Shares 100% of physical SSD blocks (0 extra disk space) while remaining independent files.
+  - **Relocate to Canonical Folder**: Moves the Primary copy to a chosen folder of choice and places links at all locations (including the Primary's original path).
+  - **Direct Deletion**: Dedicated delete icon and warning confirmation per duplicate instance or per group.
 
 ---
 
 ## 🚀 Getting Started
 
-### Prerequisites
-- macOS 14.0 or later (fully compatible with macOS 15, Sonoma, Sequoia, and later).
-- Swift 6.0+ (Xcode 15 / 16 / 27+).
+### Requirements
+- macOS 14.0 (Sonoma) or macOS 15+ (Sequoia)
+- Apple Silicon (M1/M2/M3/M4) or Intel Mac
+- Swift 6.0+ / Xcode 15+
 
-### Quick Launch
-The precompiled release app is located in the repository:
-```bash
-open CloudPurge.app
-```
-
-### Building from Source
-To compile and package `CloudPurge.app` with the native icon:
+### Build & Run Locally
+To compile, package, and sign `Pileus.app`:
 ```bash
 ./scripts/build_app.sh
+open Pileus.app
 ```
 
-To run unit tests:
+To run the unit test suite:
 ```bash
 swift test
 ```
 
-To run in debug mode via Swift Package Manager:
+To regenerate the application `.icns` file from the vector SVG source:
 ```bash
-swift run CloudPurge
+./scripts/generate_icon.sh
 ```
 
 ---
 
-## 📐 Architecture & Implementation
+## 🔒 Code Signing & Hardened Runtime
+
+Local release builds automatically sign `Pileus.app` with Apple Developer ID and enable the macOS Hardened Runtime:
+```bash
+codesign --force --deep --options runtime --timestamp \
+  --sign "Developer ID Application: liubomir borissov (K39T7B8529)" Pileus.app
+```
+If developer certificates are not installed (e.g. standard open-source contributors), the build script falls back to ad-hoc signing (`--sign -`).
+
+---
+
+## 🏗️ Repository Structure
 
 ```
-officespace/
-├── Package.swift                    # Swift package specification
-├── CloudPurge.app/                  # Bundled, signed macOS application
+pileus/
+├── Package.swift                 # Swift package specification
+├── Pileus.app/                   # Compiled, signed macOS application bundle
+├── Resources/
+│   ├── pileus-logo.svg           # High-resolution vector source logo
+│   ├── pileus-1024.png           # 1024x1024 PNG master icon
+│   └── Pileus.icns               # Multi-resolution macOS ICNS icon
 ├── Sources/
-│   ├── CloudPurgeCore/              # Shared library & UI components
-│   │   ├── Models/
-│   │   │   ├── CloudProvider.swift  # Provider metadata & stats
-│   │   │   ├── CloudItem.swift      # File metadata, status & kind
-│   │   │   ├── CloudFolderNode.swift# Hierarchical directory metrics
-│   │   │   ├── FilterOptions.swift  # Multi-parameter filter engine
-│   │   │   └── SortOption.swift     # Multi-column sorting
-│   │   ├── Services/
-│   │   │   ├── ProviderDetector.swift # Discovers iCloud & FileProvider
-│   │   │   ├── CloudScanner.swift   # Asynchronous directory crawler
-│   │   │   └── EvictionService.swift# Safe Cocoa ubiquitous eviction
-│   │   ├── Utilities/
-│   │   │   ├── DatalessDetector.swift # Low-level Darwin stat & SF_DATALESS
-│   │   │   └── ByteFormatter.swift  # Localized byte & percentage formatting
-│   │   ├── ViewModels/
-│   │   │   └── AppViewModel.swift   # App state & async coordinator
-│   │   └── Views/
-│   │       ├── MainView.swift       # NavigationSplitView & modals
-│   │       ├── SidebarView.swift    # Cloud providers list
-│   │       ├── MetricsHeaderView.swift # Summary cards & primary actions
-│   │       ├── FilterBarView.swift  # Search, filters, and tab picker
-│   │       ├── FilesTableView.swift # Sortable file list with actions
-│   │       ├── FolderAnalyzerView.swift # Folder tree space analyzer
-│   │       └── EvictionConfirmSheet.swift # Confirmation & file preview
-│   └── CloudPurgeApp/
-│       └── main.swift               # Application entry point (@main)
+│   ├── PileusCore/               # Core engine, models, services & UI
+│   │   ├── Models/               # CloudProvider, CloudItem, DuplicateGroup, FilterOptions
+│   │   ├── Services/             # CloudScanner, DuplicateService, EvictionService, ProviderDetector
+│   │   ├── Utilities/            # ByteFormatter, DatalessDetector
+│   │   ├── ViewModels/           # AppViewModel (async state & coordinator)
+│   │   └── Views/                # FilesTableView, FolderAnalyzerView, DuplicateFinderView, etc.
+│   └── PileusApp/
+│       └── main.swift            # Application entry point (@main)
 ├── Tests/
-│   └── CloudPurgeTests/             # Comprehensive unit test suite
+│   └── PileusTests/              # 14 unit tests covering scanner, duplicates, and local modes
 └── scripts/
-    ├── build_app.sh                 # App bundler and code-signing script
-    └── generate_icon.swift          # Generates AppIcon.icns
+    ├── build_app.sh              # Application bundler, icon injector, and codesigner
+    └── generate_icon.sh          # Multi-resolution ICNS generator from SVG
 ```
 
 ---
 
-## 🔒 Safety Guarantees
+## 📄 License
 
-1. **Zero Data Loss**: Eviction is only allowed when a file is confirmed to be fully uploaded (`isUploaded == true`), not actively uploading (`isUploading == false`), and free of synchronization conflicts (`hasConflicts == false`).
-2. **Standard APFS Dataless Stubs**: Eviction removes only local storage blocks on your APFS volume. The file remains indexed in Finder and in your cloud provider, immediately downloadable when opened.
+MIT © [liubomir borissov (languel)](https://github.com/languel)

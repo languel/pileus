@@ -2,28 +2,28 @@
 import PackageDescription
 
 let package = Package(
-    name: "CloudPurge",
+    name: "Pileus",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "CloudPurge", targets: ["CloudPurgeApp"]),
-        .library(name: "CloudPurgeCore", targets: ["CloudPurgeCore"])
+        .executable(name: "Pileus", targets: ["PileusApp"]),
+        .library(name: "PileusCore", targets: ["PileusCore"])
     ],
     targets: [
         .target(
-            name: "CloudPurgeCore",
-            path: "Sources/CloudPurgeCore"
+            name: "PileusCore",
+            path: "Sources/PileusCore"
         ),
         .executableTarget(
-            name: "CloudPurgeApp",
-            dependencies: ["CloudPurgeCore"],
-            path: "Sources/CloudPurgeApp"
+            name: "PileusApp",
+            dependencies: ["PileusCore"],
+            path: "Sources/PileusApp"
         ),
         .testTarget(
-            name: "CloudPurgeTests",
-            dependencies: ["CloudPurgeCore"],
-            path: "Tests/CloudPurgeTests"
+            name: "PileusTests",
+            dependencies: ["PileusCore"],
+            path: "Tests/PileusTests"
         )
     ]
 )

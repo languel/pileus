@@ -817,7 +817,7 @@ public final class DuplicateService: Sendable {
     ) throws {
         let fm = FileManager.default
         let parentDir = duplicateURL.deletingLastPathComponent()
-        let backupURL = parentDir.appendingPathComponent(".\(duplicateURL.lastPathComponent).cloudpurge-bak-\(UUID().uuidString.prefix(8))")
+        let backupURL = parentDir.appendingPathComponent(".\(duplicateURL.lastPathComponent).pileus-bak-\(UUID().uuidString.prefix(8))")
 
         let targetDestination: String
         if useRelativePath {
@@ -843,7 +843,7 @@ public final class DuplicateService: Sendable {
     ) throws {
         let fm = FileManager.default
         let parentDir = duplicateURL.deletingLastPathComponent()
-        let backupURL = parentDir.appendingPathComponent(".\(duplicateURL.lastPathComponent).cloudpurge-bak-\(UUID().uuidString.prefix(8))")
+        let backupURL = parentDir.appendingPathComponent(".\(duplicateURL.lastPathComponent).pileus-bak-\(UUID().uuidString.prefix(8))")
 
         // Generate native macOS Finder Alias bookmark data before touching the duplicate file
         let bookmarkData = try primaryURL.bookmarkData(
@@ -870,14 +870,14 @@ public final class DuplicateService: Sendable {
         let primaryStat = DatalessDetector.statInfo(forPath: primaryURL.path)
         if primaryStat.isDataless {
             throw NSError(
-                domain: "CloudPurge.DuplicateService",
+                domain: "Pileus.DuplicateService",
                 code: 1001,
                 userInfo: [NSLocalizedDescriptionKey: "Primary file is cloud-only (evicted). Download the primary file first before creating an APFS clone."]
             )
         }
 
         let parentDir = duplicateURL.deletingLastPathComponent()
-        let backupURL = parentDir.appendingPathComponent(".\(duplicateURL.lastPathComponent).cloudpurge-bak-\(UUID().uuidString.prefix(8))")
+        let backupURL = parentDir.appendingPathComponent(".\(duplicateURL.lastPathComponent).pileus-bak-\(UUID().uuidString.prefix(8))")
 
         try fm.moveItem(at: duplicateURL, to: backupURL)
         let rc = primaryURL.path.withCString { srcPtr in

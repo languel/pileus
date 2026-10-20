@@ -1,8 +1,8 @@
 import SwiftUI
-import CloudPurgeCore
+import PileusCore
 
 @main
-struct CloudPurgeApp: App {
+struct PileusApp: App {
     var body: some Scene {
         WindowGroup {
             MainView()

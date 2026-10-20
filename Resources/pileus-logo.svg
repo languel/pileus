@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="100%" height="100%">
+  <defs>
+    <!-- Dark Slate Background -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#222834" />
+      <stop offset="100%" stop-color="#1a1f29" />
+    </linearGradient>
+
+    <style>
+      .line {
+        fill: none;
+        stroke: #f0eee4;
+        stroke-width: 20;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .cap-fill {
+        fill: #f0eee4;
+      }
+    </style>
+  </defs>
+
+  <!-- App Icon Squircle Background -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#bg)" />
+
+  <!-- 1. PILEUS CAP: Sleek, tapered crescent arc -->
+  <path class="cap-fill" d="M 255 375 C 385 245, 639 245, 769 375 C 639 282, 385 282, 255 375 Z" />
+
+  <!-- 2. CLOUD BASE & LEFT SILHOUETTE -->
+  <path class="line" d="M 706 728 L 298 728 C 232 728, 194 676, 194 618 C 194 564, 236 526, 288 526 C 296 462, 358 430, 422 444 C 484 458, 520 520, 506 584" />
+
+  <!-- 3. TOP CENTER LOBE (Single clean dome, inner concentric ribs removed) -->
+  <path class="line" d="M 390 442 C 426 376, 514 352, 586 388 C 626 408, 650 446, 656 482" />
+
+  <!-- 4. PRIMARY SWEEPING S-WAVE & LEFT SPIRAL (Combined into one continuous flow) -->
+  <path class="line" d="M 404 558 C 398 572, 414 580, 426 570 C 440 558, 434 536, 416 530 C 394 522, 370 538, 370 564 C 370 598, 406 618, 438 602 C 474 584, 476 532, 446 502 C 412 468, 348 486, 346 556 C 344 636, 434 662, 488 624 C 522 600, 548 554, 588 520 C 642 474, 728 468, 782 514 C 836 560, 842 646, 792 696 C 768 720, 738 728, 706 728" />
+
+  <!-- 5. INNER S-WAVE & RIGHT SPIRAL (Clean secondary flow) -->
+  <path class="line" d="M 350 568 C 330 636, 368 728, 456 728 C 526 728, 568 672, 604 618 C 638 566, 686 536, 738 552 C 786 566, 804 624, 774 666 C 748 702, 694 702, 672 668 C 654 640, 670 602, 702 602 C 726 602, 740 622, 730 642" />
+
+  <!-- 6. SINGLE LEFT CRADLE ACCENT -->
+  <path class="line" d="M 316 592 C 302 642, 322 698, 368 728" />
+</svg>

@@ -3,3 +3,6 @@
 DerivedData/
 *.swp
 *~
+*.app
+*.zip
+build/
